@@ -4,7 +4,7 @@ use crate::flight_info;
 use std::{fs, str::FromStr};
 
 pub fn import_schedule_file(path: &str) -> HashMap<String, Vec<flight_info::FlightInfo>> {
-    let contents = fs::read_to_string("./data/cassim0401").expect("Should have been able to read the file");
+    let contents = fs::read_to_string(path).expect("Should have been able to read the file");
     let mut dpt_apt: HashMap<String, Vec<flight_info::FlightInfo>> = HashMap::new();
     for lines in contents.lines(){
         if lines.as_bytes()[0 as usize] == '3' as u8 {
@@ -32,3 +32,11 @@ pub fn import_schedule_file(path: &str) -> HashMap<String, Vec<flight_info::Flig
     }
     dpt_apt
 }
+
+
+// pub fn cache_refresh(path: &str) {
+//     let dpt_apt = import_schedule_file(path);
+//     let cache_path = "./data/cache.json";
+//     let json_data = serde_json::to_string(&dpt_apt).expect("Failed to serialize data");
+//     fs::write(cache_path, json_data).expect("Failed to write cache file");
+// }
