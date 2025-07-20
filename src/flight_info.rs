@@ -4,17 +4,19 @@ pub struct FlightInfo {
     fltid: String,
     dpt_start_local: DateTime<FixedOffset>,
     dpt_end_local: DateTime<FixedOffset>,
+    dpt_station: String,
     arr_station: String,
     frequency: Vec<u8>, // 0-6 for Sun-Sat
     flight_time: i64, // in minutes
 }
 
 impl FlightInfo{
-    pub fn new(fltid: String, dpt_start_local: DateTime<FixedOffset>, dpt_end_local: DateTime<FixedOffset>, arr_station: String, frequency: Vec<u8>, flight_time: i64) -> Self {
+    pub fn new(fltid: String, dpt_start_local: DateTime<FixedOffset>, dpt_end_local: DateTime<FixedOffset>, dpt_station:String,arr_station: String, frequency: Vec<u8>, flight_time: i64) -> Self {
         FlightInfo {
             fltid,
             dpt_start_local,
             dpt_end_local,
+            dpt_station,
             arr_station,
             frequency,
             flight_time,
@@ -37,5 +39,8 @@ impl FlightInfo{
     }
     pub fn flight_time(&self) -> i64 {
         self.flight_time
+    }
+    pub fn dpt_station(&self) -> &String {
+        &self.dpt_station
     }
 }

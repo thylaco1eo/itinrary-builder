@@ -26,8 +26,8 @@ pub fn import_schedule_file(path: &str) -> HashMap<String, Vec<flight_info::Flig
                     dpt_start_local.with_timezone(&FixedOffset::from_str(&lines[65..70]).expect("Failed to parse timezone"))
                 .with_time(arr_local).unwrap().signed_duration_since(dpt_start_local).num_minutes()
                 };
-            let flt = flight_info::FlightInfo::new(fltid.clone(), dpt_start_local, dpt_end_local, arr_station, frequency.collect(), flight_time);
-            dpt_apt.entry(dpt_station.clone()).and_modify(|e| e.push(flt.clone())).or_insert(vec![flt]);
+            let flt = flight_info::FlightInfo::new(fltid.clone(), dpt_start_local, dpt_end_local, dpt_station.clone() ,arr_station, frequency.collect(), flight_time);
+            dpt_apt.entry(dpt_station).and_modify(|e| e.push(flt.clone())).or_insert(vec![flt]);
         }
     }
     dpt_apt

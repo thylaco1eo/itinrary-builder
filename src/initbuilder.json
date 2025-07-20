@@ -1,8 +1,7 @@
 {
-  "database":{
-    "ip": "",
-    "port": 3306,
-    "username": "test",
-    "password": ""
-  }
+  "ip": "",
+  "port": "5432",
+  "username": "postgres",
+  "password": "ceshidemima",
+  "database": "postgres"
 }
