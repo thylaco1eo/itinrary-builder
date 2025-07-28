@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs::File};
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime};
 use crate::flight_info;
 use std::{fs, str::FromStr};
+use std::io::Read;
 
-pub fn import_schedule_file(path: &str) -> HashMap<String, Vec<flight_info::FlightInfo>> {
-    let contents = fs::read_to_string(path).expect("Should have been able to read the file");
+pub fn import_schedule_file(file: &mut File) -> HashMap<String, Vec<flight_info::FlightInfo>> {
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).expect("Should have been able to read the file");
     let mut dpt_apt: HashMap<String, Vec<flight_info::FlightInfo>> = HashMap::new();
     for lines in contents.lines(){
         if lines.as_bytes()[0 as usize] == '3' as u8 {

@@ -1,6 +1,11 @@
 use chrono::{FixedOffset, NaiveDate,TimeDelta,DateTime,Datelike};
 use std::{collections::HashMap, str::FromStr};
 use crate::flight_info;
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug)]
+struct SearchInfo{}
+
 
 pub fn search_flight(dpt_apt: &HashMap<String, Vec<flight_info::FlightInfo>>,request: &str) -> Vec<Vec<(String, DateTime<FixedOffset>, String, i64)>> {
     let dpt_station = &request[..3];

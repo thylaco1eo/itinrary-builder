@@ -1,6 +1,7 @@
 //extern crate chrono;
 mod flight_info;
 pub mod services;
+use actix_multipart::form::tempfile::TempFile;
 use postgres::{Client};
 use serde::Deserialize;
 use std::fs::File;
@@ -12,6 +13,9 @@ use std::sync::Mutex;
 use std::collections::HashMap;
 use flight_info::FlightInfo;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_multipart::{form::bytes, Multipart};
+use actix_multipart::form::MultipartForm;
+
 
 #[derive(Deserialize)]
 struct DataBase{
@@ -22,12 +26,18 @@ struct DataBase{
     dbname: String,
 }
 
-struct AppState {
+struct Configuration {
     flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
+    db_info: DataBase,
+}
+
+#[derive(MultipartForm)]
+struct SSIM{
+    file : TempFile,
 }
 
 #[get("/search")]
-async fn search(data: web::Data<AppState>,req_body:String) -> impl Responder {
+async fn search(data: web::Data<Configuration>,req_body:String) -> impl Responder {
     let flights = data.flights.lock().unwrap();
     let result = services::search_service::search_flight::search_flight(&flights, &req_body);
     let result_string = if result.is_empty() {
@@ -38,6 +48,7 @@ async fn search(data: web::Data<AppState>,req_body:String) -> impl Responder {
             for (flt_id, dep_time, arr_station, flight_time) in path {
                 output.push_str(&format!("Flight ID: {}, Departure Time: {}, Arrival Station: {}, Flight Time: {} minutes\n", flt_id, dep_time, arr_station, flight_time));
             }
+            output.push_str("-------------------------\n");
         }
         output
     };
@@ -45,10 +56,14 @@ async fn search(data: web::Data<AppState>,req_body:String) -> impl Responder {
 }
 
 #[post("/import_ssim")]
-async fn import_ssim(req_body: String) -> impl Responder {
-    HttpResponse::Ok().body(req_body)
+async fn import_ssim(data: web::Data<Configuration>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
+    {
+        let mut data_new = data.flights.lock().unwrap();
+        data_new.clear(); // Clear existing data before importing new one
+        *data_new  = services::data_service::import_schedule_file(multipart_form.file.file.as_file_mut());
+    }
+    HttpResponse::Ok().body("File imported successfully")
 }
-
 
 //fn main() {
     
@@ -103,14 +118,20 @@ async fn import_ssim(req_body: String) -> impl Responder {
 
 #[actix_web::main]
     async fn main() -> std::io::Result<()> {
-        let dpt_apt = services::data_service::import_schedule_file("./data/cassim0401");
-        let app_state = web::Data::new(AppState {
+        let mut file = File::open("./src/initbuilder.json").unwrap();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        let db_info:DataBase = serde_json::from_str(&contents).unwrap();
+        let dpt_apt = HashMap::new();
+        let app_state = web::Data::new(Configuration {
             flights: Mutex::new(dpt_apt),
+            db_info: db_info,
         });
         HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
             .service(search)
+            .service(import_ssim)
     })
         .bind(("127.0.0.1", 8080))?
         .run()
