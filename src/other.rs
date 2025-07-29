@@ -1,4 +1,3 @@
-pub mod structure;
 use crate::structure::{Configuration,DataBase};
 use std::fs::File;
 use std::io::prelude::*;
