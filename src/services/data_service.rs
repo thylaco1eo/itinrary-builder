@@ -1,13 +1,13 @@
 use std::{collections::HashMap, fs::File};
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime};
-use crate::flight_info;
-use std::{fs, str::FromStr};
+use crate::structure::FlightInfo;
+use std::str::FromStr;
 use std::io::Read;
 
-pub fn import_schedule_file(file: &mut File) -> HashMap<String, Vec<flight_info::FlightInfo>> {
+pub fn import_schedule_file(file: &mut File) -> HashMap<String, Vec<FlightInfo>> {
     let mut contents = String::new();
     file.read_to_string(&mut contents).expect("Should have been able to read the file");
-    let mut dpt_apt: HashMap<String, Vec<flight_info::FlightInfo>> = HashMap::new();
+    let mut dpt_apt: HashMap<String, Vec<FlightInfo>> = HashMap::new();
     for lines in contents.lines(){
         if lines.as_bytes()[0 as usize] == '3' as u8 {
             let fltid: String = lines[5..9].chars().filter(|c| !c.is_whitespace()).collect::<String>().clone();
@@ -28,7 +28,7 @@ pub fn import_schedule_file(file: &mut File) -> HashMap<String, Vec<flight_info:
                     dpt_start_local.with_timezone(&FixedOffset::from_str(&lines[65..70]).expect("Failed to parse timezone"))
                 .with_time(arr_local).unwrap().signed_duration_since(dpt_start_local).num_minutes()
                 };
-            let flt = flight_info::FlightInfo::new(fltid.clone(), dpt_start_local, dpt_end_local, dpt_station.clone() ,arr_station, frequency.collect(), flight_time);
+            let flt = FlightInfo::new(fltid.clone(), dpt_start_local, dpt_end_local, dpt_station.clone() ,arr_station, frequency.collect(), flight_time);
             dpt_apt.entry(dpt_station).and_modify(|e| e.push(flt.clone())).or_insert(vec![flt]);
         }
     }
