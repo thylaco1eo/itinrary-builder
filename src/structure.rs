@@ -5,6 +5,7 @@ use chrono::{DateTime, FixedOffset};
 use actix_multipart::form::MultipartForm;
 use actix_multipart::form::tempfile::TempFile;
 
+
 #[derive(Debug, Clone)]
 pub struct FlightInfo {
     fltid: String,
@@ -51,14 +52,14 @@ impl FlightInfo{
     }
 }
 
-pub struct Configuration {
+pub struct WebData {
     flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
     db_info: DataBase,
 }
 
-impl Configuration {
+impl WebData {
     pub fn new(flights: Mutex<HashMap<String, Vec<FlightInfo>>>, db_info: DataBase) -> Self {
-        Configuration { flights, db_info }
+        WebData { flights, db_info }
     }
     pub fn flights(&self) -> &Mutex<HashMap<String, Vec<FlightInfo>>> {
         &self.flights
@@ -79,7 +80,7 @@ impl SSIM {
     }   
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize,Clone)]
 pub struct DataBase{
     host: String,
     port: String,
@@ -106,5 +107,44 @@ impl DataBase {
     }
     pub fn dbname(&self) -> &String {
         &self.dbname
+    } 
+}
+
+#[derive(Deserialize)]
+pub struct log{
+    level: String,
+    file: String,
+    pattern: String,
+}
+
+impl log {
+    pub fn new(level: String, file: String, pattern: String) -> Self {
+        log { level, file, pattern }
+    }
+    pub fn level(&self) -> &String {
+        &self.level
+    }
+    pub fn file(&self) -> &String {
+        &self.file
+    }
+    pub fn pattern(&self) -> &String {
+        &self.pattern
+    }
+}
+
+#[derive(Deserialize)]
+pub struct Configuration{
+    database: DataBase,
+    log: log,
+}
+impl Configuration {
+    pub fn new(database: DataBase, log: log) -> Self {
+        Configuration { database, log }
+    }
+    pub fn database(&self) -> &DataBase {
+        &self.database
+    }
+    pub fn log(&self) -> &log {
+        &self.log
     } 
 }

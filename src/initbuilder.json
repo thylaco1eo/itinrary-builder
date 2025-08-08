@@ -1,7 +1,14 @@
 {
-  "host": "123123",
-  "port": "5432",
-  "username": "postgres",
-  "password": "ceshidemima",
-  "dbname": "postgres"
+  "database":{
+    "host": "123123",
+    "port": "5432",
+    "username": "postgres",
+    "password": "ceshidemima",
+    "dbname": "postgres"
+  },
+  "log":{
+    "level": "error",
+    "file": "log/itinbuilder.log",
+    "pattern": "{d} - {l} - {m}{n}"
+  }
 }

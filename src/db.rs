@@ -28,4 +28,12 @@ pub fn check_db_status(client: &mut Client) {
         )", &[]
     ).expect("Failed to execute query");
     println!("Database status: {:?}", query);
+    if query.is_empty()|| query[0].get::<_, bool>(0) == false {
+        client.execute(
+            "CREATE SCHEMA ITINBUILDER", &[]
+        ).expect("Failed to create ITINBUILDER schema");
+        println!("ITINBUILDER schema created");
+    } else {
+        println!("ITINBUILDER schema already exists");
+    }
 }
