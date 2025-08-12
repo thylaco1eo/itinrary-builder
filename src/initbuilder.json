@@ -8,7 +8,7 @@
   },
   "log":{
     "level": "error",
-    "file": "log/itinbuilder.log",
+    "file": "./log/itinbuilder.log",
     "pattern": "{d} - {l} - {m}{n}"
   }
 }

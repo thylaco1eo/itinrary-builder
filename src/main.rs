@@ -4,22 +4,25 @@ pub mod services;
 pub mod db;
 pub mod structure;
 pub mod other;
-use structure::{WebData,SSIM,Configuration};
+use structure::{WebData,SSIM};
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use actix_multipart::form::MultipartForm;
-use serde_json::json;
 use actix_web::middleware::Logger;
-use log4rs;
-use std::collections::HashMap;
+use log4rs::{
+    append::{
+        file::FileAppender,
+    },
+    config::{Appender, Root},
+    encode::pattern::PatternEncoder,
+};
 use std::fs::File;
 use std::io::prelude::*;
-use std::sync::Mutex;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
+use log::{error, info, trace};
 
 
 pub struct AppState{
     database: Pool<Postgres>,
-    //log: log,
 }
 
 #[get("/search")]
@@ -77,26 +80,37 @@ async fn main() -> std::io::Result<()> {
     let mut contents = String::new();
     file.read_to_string(&mut contents).expect("Failed to read config file");
     let config:structure::Configuration = serde_json::from_str(&contents).expect("Failed to parse config file");
+    let logfile = FileAppender::builder()
+        .encoder(Box::new(PatternEncoder::new(config.log().pattern())))
+        .build(config.log().file())
+        .expect("Failed to create file appender");
+    let log_config = log4rs::Config::builder()
+        .appender(Appender::builder().build("logfile", Box::new(logfile)))
+        .build(Root::builder().appender("logfile").build(log::LevelFilter::Trace))
+        .expect("Failed to build log config");
+    let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
     let connection = other::make_db_connection(config.database());
     let pool = match PgPoolOptions::new()
         .max_connections(10)
         .connect(&connection).await
     {
         Ok(pool) => {
-            println!("Connection to the database is successful!");
+            info!("Connection to the database is successful!");
             pool
         }
         Err(err) => {
-            println!("Failed to connect to the database: {:?}", err);
+            error!("Failed to connect to the database: {:?}", err);
             std::process::exit(1);
         }
     };
+    db::check_db_status(&pool).await;
     let app_state = web::Data::new(AppState{database: pool.clone()});
     HttpServer::new(move || {
     App::new()
         .app_data(app_state.clone())
         .service(search)
         .service(import_ssim)
+        .service(services::health_check)
         .wrap(Logger::default())
 })
     .bind(("127.0.0.1", 8080))?

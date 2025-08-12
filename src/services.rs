@@ -12,8 +12,6 @@ pub mod rule_service {
     pub mod post_rules;
 }
 
-pub fn config(){}
-
 #[get("/api/healthcheck")]
 async fn health_check() -> impl Responder {
     const MESSAGE: &str = "Itinbuilder is running";
