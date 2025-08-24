@@ -18,7 +18,7 @@ use log4rs::{
 use std::fs::File;
 use std::io::prelude::*;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
-use log::{error, info, trace};
+use log::{error, info};
 
 
 pub struct AppState{
@@ -52,7 +52,7 @@ async fn search(data: web::Data<WebData>,req_body:String) -> impl Responder {
 }
 
 #[post("/import_ssim")]
-async fn import_ssim(data: web::Data<WebData>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
+async fn import_ssim(data: web::Data<AppState>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
     {
         let mut data_new = data.flights().lock().unwrap();
         data_new.clear(); // Clear existing data before importing new one
@@ -60,19 +60,6 @@ async fn import_ssim(data: web::Data<WebData>, mut multipart_form: MultipartForm
     }
     HttpResponse::Ok().body("File imported successfully")
 }
-
-
-// fn main() -> std::io::Result<()> {
-//     let mut file = File::open("./src/initbuilder.json").unwrap();
-//     let mut contents = String::new();
-//     file.read_to_string(&mut contents).expect("Failed to read config file");
-//     let config:Configuration = serde_json::from_str(&contents).expect("Failed to parse config file");
-//     let conf = WebData::new(Mutex::new(HashMap::new()), config.database());
-//     let mut db_client = db::connect_db(conf.db_info());
-//     db::check_db_status(&mut db_client);
-//     // 启动异步 runtime
-//     actix_web::rt::System::new().block_on(async_main(db_client))
-// }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -113,7 +100,7 @@ async fn main() -> std::io::Result<()> {
         .service(services::health_check)
         .wrap(Logger::default())
 })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("0.0.0.0", 8080))?
     .run()
     .await
 }
