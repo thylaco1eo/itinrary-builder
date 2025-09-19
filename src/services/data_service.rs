@@ -1,16 +1,17 @@
-use std::{collections::HashMap, fs::File};
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime};
+use std::fs::File;
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, Utc};
 use crate::structure::FlightInfo;
 use std::str::FromStr;
 use std::io::Read;
 
-pub fn import_schedule_file(file: &mut File) -> HashMap<String, Vec<FlightInfo>> {
+pub fn import_schedule_file(file: &mut File){
     let mut contents = String::new();
     file.read_to_string(&mut contents).expect("Should have been able to read the file");
-    let mut dpt_apt: HashMap<String, Vec<FlightInfo>> = HashMap::new();
+    let mut flights: Vec<FlightInfo> = Vec::new();
     for lines in contents.lines(){
         if lines.as_bytes()[0 as usize] == '3' as u8 {
             let fltid: String = lines[5..9].chars().filter(|c| !c.is_whitespace()).collect::<String>().clone();
+            let carrier:String = lines[2..5].chars().filter(|c| !c.is_whitespace()).collect::<String>().clone();
             let start_date = NaiveDate::parse_from_str(&lines[14..21], "%d%b%y").expect("Failed to parse date");
             let end_date = NaiveDate::parse_from_str(&lines[21..28], "%d%b%y").expect("Failed to parse date");
             let frequency = lines[28..35].chars().filter_map(|c| c.to_digit(10).map(|d| d as u8));
@@ -18,21 +19,22 @@ pub fn import_schedule_file(file: &mut File) -> HashMap<String, Vec<FlightInfo>>
             let arr_station = lines[54..57].chars().collect::<String>();
             let dpt_local = NaiveTime::parse_from_str(&lines[43..47], "%H%M").expect("Failed to parse time");
             let arr_local = NaiveTime::parse_from_str(&lines[61..65], "%H%M").expect("Failed to parse time");
-            let dpt_start_local: DateTime<FixedOffset> = start_date.and_time(dpt_local).and_local_timezone(FixedOffset::from_str(&lines[47..52]).expect("Failed to parse timezone")).unwrap();
-            let dpt_end_local:DateTime<FixedOffset> = end_date.and_time(dpt_local).and_local_timezone(FixedOffset::from_str(&lines[47..52]).expect("Failed to parse timezone")).unwrap();
-            let flight_time = if dpt_start_local.with_timezone(&FixedOffset::from_str(&lines[65..70]).expect("Failed to parse timezone"))
-                .with_time(arr_local).unwrap().signed_duration_since(dpt_start_local).num_minutes()< 0 {
-                    dpt_start_local.with_timezone(&FixedOffset::from_str(&lines[65..70]).expect("Failed to parse timezone"))
-                .with_time(arr_local).unwrap().signed_duration_since(dpt_start_local).num_minutes() + 1440
+            let dpt_start_utc: DateTime<Utc> = start_date.and_time(dpt_local).and_local_timezone(FixedOffset::from_str(&lines[47..52]).expect("Failed to parse timezone")).unwrap().to_utc();
+            let dpt_end_utc:DateTime<Utc> = end_date.and_time(dpt_local).and_local_timezone(FixedOffset::from_str(&lines[47..52]).expect("Failed to parse timezone")).unwrap().to_utc();
+            let flight_time = if dpt_start_utc.with_timezone(&FixedOffset::from_str(&lines[65..70]).expect("Failed to parse timezone"))
+                .with_time(arr_local).unwrap().signed_duration_since(dpt_start_utc).num_minutes()< 0 {
+                    dpt_start_utc.with_timezone(&FixedOffset::from_str(&lines[65..70]).expect("Failed to parse timezone"))
+                .with_time(arr_local).unwrap().signed_duration_since(dpt_start_utc).num_minutes() + 1440
                 }else {
-                    dpt_start_local.with_timezone(&FixedOffset::from_str(&lines[65..70]).expect("Failed to parse timezone"))
-                .with_time(arr_local).unwrap().signed_duration_since(dpt_start_local).num_minutes()
+                    dpt_start_utc.with_timezone(&FixedOffset::from_str(&lines[65..70]).expect("Failed to parse timezone"))
+                .with_time(arr_local).unwrap().signed_duration_since(dpt_start_utc).num_minutes()
                 };
-            let flt = FlightInfo::new(fltid.clone(), dpt_start_local, dpt_end_local, dpt_station.clone() ,arr_station, frequency.collect(), flight_time);
-            dpt_apt.entry(dpt_station).and_modify(|e| e.push(flt.clone())).or_insert(vec![flt]);
+            let flt = FlightInfo::new(fltid,carrier, dpt_start_utc, dpt_end_utc, dpt_station ,arr_station, frequency.collect(), flight_time);
+            flights.push(flt);
+            //dpt_apt.entry(dpt_station).and_modify(|e| e.push(flt.clone())).or_insert(vec![flt]);
         }
     }
-    dpt_apt
+    //dpt_apt
 }
 
 

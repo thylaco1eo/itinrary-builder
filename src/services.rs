@@ -1,4 +1,4 @@
-use actix_web::{delete, get, patch, post, web, HttpResponse, Responder};
+use actix_web::{get, HttpResponse, Responder};
 use serde_json::json;
 
 pub mod data_service;

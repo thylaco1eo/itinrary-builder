@@ -3,7 +3,7 @@ mod flight_info;
 pub mod services;
 pub mod db;
 pub mod structure;
-pub mod other;
+pub mod utils;
 use structure::{WebData,SSIM};
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use actix_multipart::form::MultipartForm;
@@ -76,7 +76,7 @@ async fn main() -> std::io::Result<()> {
         .build(Root::builder().appender("logfile").build(log::LevelFilter::Trace))
         .expect("Failed to build log config");
     let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
-    let connection = other::make_db_connection(config.database());
+    let connection = utils::make_db_connection(config.database());
     let pool = match PgPoolOptions::new()
         .max_connections(10)
         .connect(&connection).await

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::sync::Mutex;
 use std::collections::HashMap;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 use actix_multipart::form::MultipartForm;
 use actix_multipart::form::tempfile::TempFile;
 
@@ -9,8 +9,9 @@ use actix_multipart::form::tempfile::TempFile;
 #[derive(Debug, Clone)]
 pub struct FlightInfo {
     fltid: String,
-    dpt_start_local: DateTime<FixedOffset>,
-    dpt_end_local: DateTime<FixedOffset>,
+    carrier: String,
+    dpt_start_utc: DateTime<Utc>,
+    dpt_end_utc: DateTime<Utc>,
     dpt_station: String,
     arr_station: String,
     frequency: Vec<u8>, // 0-6 for Sun-Sat
@@ -18,11 +19,12 @@ pub struct FlightInfo {
 }
 
 impl FlightInfo{
-    pub fn new(fltid: String, dpt_start_local: DateTime<FixedOffset>, dpt_end_local: DateTime<FixedOffset>, dpt_station:String,arr_station: String, frequency: Vec<u8>, flight_time: i64) -> Self {
+    pub fn new(fltid: String, carrier: String,dpt_start_utc: DateTime<Utc>, dpt_end_utc: DateTime<Utc>, dpt_station:String,arr_station: String, frequency: Vec<u8>, flight_time: i64) -> Self {
         FlightInfo {
             fltid,
-            dpt_start_local,
-            dpt_end_local,
+            carrier,
+            dpt_start_utc,
+            dpt_end_utc,
             dpt_station,
             arr_station,
             frequency,
@@ -32,11 +34,14 @@ impl FlightInfo{
     pub fn fltid(&self) -> &String {
         &self.fltid
     }
-    pub fn dpt_start_local(&self) -> &DateTime<FixedOffset> {
-        &self.dpt_start_local
+    pub fn carrier(&self) -> &String {
+        &self.carrier
     }
-    pub fn dpt_end_local(&self) -> &DateTime<FixedOffset> {
-        &self.dpt_end_local
+    pub fn dpt_start_local(&self) -> &DateTime<Utc> {
+        &self.dpt_start_utc
+    }
+    pub fn dpt_end_local(&self) -> &DateTime<Utc> {
+        &self.dpt_end_utc
     }
     pub fn arr_station(&self) -> &String {
         &self.arr_station

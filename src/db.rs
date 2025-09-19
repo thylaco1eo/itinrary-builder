@@ -28,6 +28,7 @@ pub async fn init_table(pool: &Pool<sqlx::Postgres>) {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ITINBUILDER.flights (
             id SERIAL PRIMARY KEY,
+            carrier VARCHAR(2) NOT NULL,
             flight_id VARCHAR(10) NOT NULL,
             departure_time TIMESTAMP WITH TIME ZONE NOT NULL,
             arrival_time TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -43,13 +44,9 @@ pub async fn init_table(pool: &Pool<sqlx::Postgres>) {
 }
 
 pub async fn import_ssim(pool: &Pool<sqlx::Postgres>) {
-    // This function initializes the database by checking the schema and creating necessary tables.
-    check_db_status(pool).await;
-    init_table(pool).await;
-}
-
-pub async fn load_db(pool: &Pool<sqlx::Postgres>) {
-    // This function is the entry point for loading the database.
-    // It can be called to ensure the database is ready for use.
-    load_ssim(pool).await;
+    // This function imports SSIM data into the database, It drop existing data and re-imports it.
+    sqlx::query("TRUNCATE TABLE ITINBUILDER.flights")
+        .execute(pool)
+        .await
+        .expect("Failed to truncate flights table");
 }

@@ -1,4 +1,4 @@
-use chrono::{FixedOffset, NaiveDate,TimeDelta,DateTime,Datelike};
+use chrono::{FixedOffset, NaiveDate,TimeDelta,DateTime,Datelike,Utc};
 use std::{collections::HashMap, str::FromStr};
 use serde::Deserialize;
 use crate::structure::FlightInfo;
