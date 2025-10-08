@@ -4,7 +4,9 @@ pub mod services;
 pub mod db;
 pub mod structure;
 pub mod utils;
-use structure::{WebData,SSIM};
+
+use std::collections::HashMap;
+use structure::SSIM;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use actix_multipart::form::MultipartForm;
 use actix_web::middleware::Logger;
@@ -17,13 +19,28 @@ use log4rs::{
 };
 use std::fs::File;
 use std::io::prelude::*;
+use std::sync::Mutex;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use log::{error, info};
+use crate::structure::FlightInfo;
 
-
-pub struct AppState{
+pub struct WebData {
+    flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
     database: Pool<Postgres>,
 }
+
+impl WebData {
+    pub fn new(flights: Mutex<HashMap<String, Vec<FlightInfo>>>, data_base: Pool<Postgres>) -> Self {
+        WebData { flights, database: data_base }
+    }
+    pub fn flights(&self) -> &Mutex<HashMap<String, Vec<FlightInfo>>> {
+        &self.flights
+    }
+    pub fn db_info(&self) -> &Pool<Postgres> {
+        &self.database
+    }
+}
+
 
 #[get("/search")]
 async fn search(data: web::Data<WebData>,req_body:String) -> impl Responder {
@@ -52,12 +69,9 @@ async fn search(data: web::Data<WebData>,req_body:String) -> impl Responder {
 }
 
 #[post("/import_ssim")]
-async fn import_ssim(data: web::Data<AppState>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
-    {
-        let mut data_new = data.flights().lock().unwrap();
-        data_new.clear(); // Clear existing data before importing new one
-        *data_new  = services::data_service::import_schedule_file(multipart_form.file().file.as_file_mut());
-    }
+async fn import_ssim(data: web::Data<WebData>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
+    let flights = services::data_service::import_schedule_file(multipart_form.file().file.as_file_mut());
+    db::import_ssim(&data.database, &flights).await;
     HttpResponse::Ok().body("File imported successfully")
 }
 
@@ -74,7 +88,7 @@ async fn main() -> std::io::Result<()> {
     let log_config = log4rs::Config::builder()
         .appender(Appender::builder().build("logfile", Box::new(logfile)))
         .build(Root::builder().appender("logfile").build(log::LevelFilter::Trace))
-        .expect("Failed to build log config");
+        .expect("Failed to build Log config");
     let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
     let connection = utils::make_db_connection(config.database());
     let pool = match PgPoolOptions::new()
@@ -91,7 +105,7 @@ async fn main() -> std::io::Result<()> {
         }
     };
     db::check_db_status(&pool).await;
-    let app_state = web::Data::new(AppState{database: pool.clone()});
+    let app_state = web::Data::new(WebData{database: pool.clone()});
     HttpServer::new(move || {
     App::new()
         .app_data(app_state.clone())

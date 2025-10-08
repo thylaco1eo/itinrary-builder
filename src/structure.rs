@@ -1,27 +1,25 @@
 use serde::Deserialize;
-use std::sync::Mutex;
-use std::collections::HashMap;
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 use actix_multipart::form::MultipartForm;
 use actix_multipart::form::tempfile::TempFile;
 
 
 #[derive(Debug, Clone)]
 pub struct FlightInfo {
-    fltid: String,
+    flt_id: String,
     carrier: String,
-    dpt_start_utc: DateTime<Utc>,
-    dpt_end_utc: DateTime<Utc>,
     dpt_station: String,
     arr_station: String,
-    frequency: Vec<u8>, // 0-6 for Sun-Sat
+    dpt_start_utc: DateTime<Utc>,
+    dpt_end_utc: DateTime<Utc>,
+    frequency: String, // 0-6 for Sun-Sat
     flight_time: i64, // in minutes
 }
 
 impl FlightInfo{
-    pub fn new(fltid: String, carrier: String,dpt_start_utc: DateTime<Utc>, dpt_end_utc: DateTime<Utc>, dpt_station:String,arr_station: String, frequency: Vec<u8>, flight_time: i64) -> Self {
+    pub fn new(flt_id: String, carrier: String, dpt_start_utc: DateTime<Utc>, dpt_end_utc: DateTime<Utc>, dpt_station:String, arr_station: String, frequency: String, flight_time: i64) -> Self {
         FlightInfo {
-            fltid,
+            flt_id,
             carrier,
             dpt_start_utc,
             dpt_end_utc,
@@ -31,22 +29,22 @@ impl FlightInfo{
             flight_time,
         }
     }
-    pub fn fltid(&self) -> &String {
-        &self.fltid
+    pub fn flt_id(&self) -> &String {
+        &self.flt_id
     }
     pub fn carrier(&self) -> &String {
         &self.carrier
     }
-    pub fn dpt_start_local(&self) -> &DateTime<Utc> {
+    pub fn dpt_start_utc(&self) -> &DateTime<Utc> {
         &self.dpt_start_utc
     }
-    pub fn dpt_end_local(&self) -> &DateTime<Utc> {
+    pub fn dpt_end_utc(&self) -> &DateTime<Utc> {
         &self.dpt_end_utc
     }
     pub fn arr_station(&self) -> &String {
         &self.arr_station
     }
-    pub fn frequency(&self) -> &Vec<u8> {
+    pub fn frequency(&self) -> &String {
         &self.frequency
     }
     pub fn flight_time(&self) -> i64 {
@@ -57,22 +55,6 @@ impl FlightInfo{
     }
 }
 
-pub struct WebData {
-    flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
-    db_info: DataBase,
-}
-
-impl WebData {
-    pub fn new(flights: Mutex<HashMap<String, Vec<FlightInfo>>>, db_info: DataBase) -> Self {
-        WebData { flights, db_info }
-    }
-    pub fn flights(&self) -> &Mutex<HashMap<String, Vec<FlightInfo>>> {
-        &self.flights
-    }
-    pub fn db_info(&self) -> &DataBase {
-        &self.db_info
-    }
-}
 
 #[derive(MultipartForm)]
 pub struct SSIM{
@@ -112,19 +94,19 @@ impl DataBase {
     }
     pub fn dbname(&self) -> &String {
         &self.dbname
-    } 
+    }
 }
 
 #[derive(Deserialize)]
-pub struct log{
+pub struct Log {
     level: String,
     file: String,
     pattern: String,
 }
 
-impl log {
+impl Log {
     pub fn new(level: String, file: String, pattern: String) -> Self {
-        log { level, file, pattern }
+        Log { level, file, pattern }
     }
     pub fn level(&self) -> &String {
         &self.level
@@ -140,16 +122,16 @@ impl log {
 #[derive(Deserialize)]
 pub struct Configuration{
     database: DataBase,
-    log: log,
+    log: Log,
 }
 impl Configuration {
-    pub fn new(database: DataBase, log: log) -> Self {
+    pub fn new(database: DataBase, log: Log) -> Self {
         Configuration { database, log }
     }
     pub fn database(&self) -> &DataBase {
         &self.database
     }
-    pub fn log(&self) -> &log {
+    pub fn log(&self) -> &Log {
         &self.log
     } 
 }

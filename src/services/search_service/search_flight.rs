@@ -7,7 +7,7 @@ use crate::structure::FlightInfo;
 struct SearchInfo{}
 
 
-pub fn search_flight(dpt_apt: &HashMap<String, Vec<FlightInfo>>,request: &str) -> Vec<Vec<(String, DateTime<FixedOffset>, String, i64)>> {
+pub fn search_flight(dpt_apt: &HashMap<String, Vec<FlightInfo>>,request: &str) -> Vec<Vec<(String, DateTime<Utc>, String, i64)>> {
     let dpt_station = &request[..3];
     let arr_station = &request[3..6];
     let dpt_date = NaiveDate::parse_from_str(&request[6..13], "%d%b%y").expect("Failed to parse date")
