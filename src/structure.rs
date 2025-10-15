@@ -120,18 +120,45 @@ impl Log {
 }
 
 #[derive(Deserialize)]
+pub struct Neo4j{
+    uri: String,
+    username: String,
+    password: String,
+}
+
+impl Neo4j {
+    pub fn new(uri: String, username: String, password: String) -> Self {
+        Neo4j { uri, username, password }
+    }
+    pub fn uri(&self) -> &String {
+        &self.uri
+    }
+    pub fn username(&self) -> &String {
+        &self.username
+    }
+    pub fn password(&self) -> &String {
+        &self.password
+    } 
+}
+
+#[derive(Deserialize)]
 pub struct Configuration{
     database: DataBase,
+    neo4j: Neo4j,
     log: Log,
 }
+
 impl Configuration {
-    pub fn new(database: DataBase, log: Log) -> Self {
-        Configuration { database, log }
+    pub fn new(database: DataBase, neo4j: Neo4j,log: Log) -> Self {
+        Configuration { database, neo4j,log }
     }
     pub fn database(&self) -> &DataBase {
         &self.database
     }
     pub fn log(&self) -> &Log {
         &self.log
-    } 
+    }
+    pub fn neo4j(&self) -> &Neo4j {
+        &self.neo4j
+    }
 }

@@ -1,6 +1,6 @@
 //extern crate chrono;
 mod flight_info;
-pub mod services;
+//pub mod services;
 pub mod db;
 pub mod structure;
 pub mod utils;
@@ -23,61 +23,80 @@ use std::sync::Mutex;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use log::{error, info};
 use crate::structure::FlightInfo;
+use neo4rs::{Graph,query};
+
+//pub struct WebData {
+//   flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
+//    database: Pool<Postgres>,
+//}
 
 pub struct WebData {
-    flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
-    database: Pool<Postgres>,
+    database: Graph,
 }
 
 impl WebData {
-    pub fn new(flights: Mutex<HashMap<String, Vec<FlightInfo>>>, data_base: Pool<Postgres>) -> Self {
-        WebData { flights, database: data_base }
-    }
-    pub fn flights(&self) -> &Mutex<HashMap<String, Vec<FlightInfo>>> {
-        &self.flights
-    }
-    pub fn db_info(&self) -> &Pool<Postgres> {
-        &self.database
+    // pub fn new(flights: Mutex<HashMap<String, Vec<FlightInfo>>>, data_base: Pool<Postgres>) -> Self {
+    //     WebData { flights, database: data_base }
+    // }
+    //pub fn flights(&self) -> &Mutex<HashMap<String, Vec<FlightInfo>>> {
+    //    &self.flights
+    //}
+    //pub fn db_info(&self) -> &Pool<Postgres> {
+    //    &self.database
+    //}
+    pub fn new(data_base: Graph) -> Self {
+        WebData {database: data_base }
     }
 }
 
 
 #[get("/search")]
-async fn search(data: web::Data<WebData>,req_body:String) -> impl Responder {
-    if let Some(flights) = data.flights().lock().ok(){
-        if flights.is_empty() {
-            return HttpResponse::NotFound().body("No flight data available");
-        }
-    } else {
-        return HttpResponse::InternalServerError().body("Failed to lock flight data");
+// async fn search(data: web::Data<WebData>,req_body:String) -> impl Responder {
+//     if let Some(flights) = data.flights().lock().ok(){
+//         if flights.is_empty() {
+//             return HttpResponse::NotFound().body("No flight data available");
+//         }
+//     } else {
+//         return HttpResponse::InternalServerError().body("Failed to lock flight data");
+//     }
+//     let flights = data.flights().lock().unwrap();
+//     let result = services::search_service::search_flight::search_flight(&flights, &req_body);
+//     let result_string = if result.is_empty() {
+//         "No flights found".to_string()
+//     } else {
+//         let mut output = String::new();
+//         for path in result {
+//             for (flt_id, dep_time, arr_station, flight_time) in path {
+//                 output.push_str(&format!("Flight ID: {}, Departure Time: {}, Arrival Station: {}, Flight Time: {} minutes\n", flt_id, dep_time, arr_station, flight_time));
+//             }
+//             output.push_str("-------------------------\n");
+//         }
+//         output
+//     };
+//     HttpResponse::Ok().body(result_string)
+// }
+
+async fn search(data: web::Data<WebData>,reqbody:String) -> impl Responder {
+    let mut result = data.database.execute(query("MATCH (n) RETURN n")).await.unwrap();
+    let mut collect = String::new();
+    while let Ok(Some(row)) = result.next().await {
+        let node: neo4rs::Node = row.get("n").unwrap();
+        collect.push_str(&format!("Node ID: {}, Labels: {:?}\n", node.id(), node.labels()));
+        //println!("Node ID: {}, Labels: {:?}", node.id(), node.labels());
     }
-    let flights = data.flights().lock().unwrap();
-    let result = services::search_service::search_flight::search_flight(&flights, &req_body);
-    let result_string = if result.is_empty() {
-        "No flights found".to_string()
-    } else {
-        let mut output = String::new();
-        for path in result {
-            for (flt_id, dep_time, arr_station, flight_time) in path {
-                output.push_str(&format!("Flight ID: {}, Departure Time: {}, Arrival Station: {}, Flight Time: {} minutes\n", flt_id, dep_time, arr_station, flight_time));
-            }
-            output.push_str("-------------------------\n");
-        }
-        output
-    };
-    HttpResponse::Ok().body(result_string)
+    HttpResponse::Ok().body(collect)
 }
 
-#[post("/import_ssim")]
-async fn import_ssim(data: web::Data<WebData>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
-    let flights = services::data_service::import_schedule_file(multipart_form.file().file.as_file_mut());
-    db::import_ssim(&data.database, &flights).await;
-    HttpResponse::Ok().body("File imported successfully")
-}
+//#[post("/import_ssim")]
+// async fn import_ssim(data: web::Data<WebData>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
+//     let flights = services::data_service::import_schedule_file(multipart_form.file().file.as_file_mut());
+//     db::import_ssim(&data.database, &flights).await;
+//     HttpResponse::Ok().body("File imported successfully")
+// }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let mut file = File::open("./src/initbuilder.json").unwrap();
+    let mut file = File::open("./src/itinbuilder.json").unwrap();
     let mut contents = String::new();
     file.read_to_string(&mut contents).expect("Failed to read config file");
     let config:structure::Configuration = serde_json::from_str(&contents).expect("Failed to parse config file");
@@ -90,31 +109,33 @@ async fn main() -> std::io::Result<()> {
         .build(Root::builder().appender("logfile").build(log::LevelFilter::Trace))
         .expect("Failed to build Log config");
     let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
-    let connection = utils::make_db_connection(config.database());
-    let pool = match PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&connection).await
-    {
-        Ok(pool) => {
-            info!("Connection to the database is successful!");
-            pool
-        }
-        Err(err) => {
-            error!("Failed to connect to the database: {:?}", err);
-            std::process::exit(1);
-        }
-    };
-    db::check_db_status(&pool).await;
-    let app_state = web::Data::new(WebData{database: pool.clone()});
+    let graph = Graph::new(config.neo4j().uri(), config.neo4j().username(), config.neo4j().password()).await.expect("Failed to connect to Neo4j");
+    //let connection = utils::make_db_connection(config.database());
+    // let pool = match PgPoolOptions::new()
+    //     .max_connections(10)
+    //     .connect(&connection).await
+    // {
+    //     Ok(pool) => {
+    //         info!("Connection to the database is successful!");
+    //         pool
+    //     }
+    //     Err(err) => {
+    //         error!("Failed to connect to the database: {:?}", err);
+    //         std::process::exit(1);
+    //     }
+    // };
+    //db::check_db_status(&pool).await;
+
+    let app_state = web::Data::new(WebData{database: graph.clone()});
     HttpServer::new(move || {
     App::new()
         .app_data(app_state.clone())
         .service(search)
-        .service(import_ssim)
-        .service(services::health_check)
+        //.service(import_ssim)
+        //.service(services::health_check)
         .wrap(Logger::default())
 })
-    .bind(("0.0.0.0", 8080))?
+    .bind(("127.0.0.1", 8080))?
     .run()
     .await
 }
