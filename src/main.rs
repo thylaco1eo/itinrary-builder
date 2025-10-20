@@ -5,25 +5,23 @@ pub mod db;
 pub mod structure;
 pub mod utils;
 
-use std::collections::HashMap;
-use structure::SSIM;
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use crate::structure::FlightInfo;
 use actix_multipart::form::MultipartForm;
 use actix_web::middleware::Logger;
+use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use log::{error, info};
 use log4rs::{
-    append::{
-        file::FileAppender,
-    },
+    append::file::FileAppender,
     config::{Appender, Root},
     encode::pattern::PatternEncoder,
 };
+use neo4rs::{query, Graph};
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
 use std::sync::Mutex;
-use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
-use log::{error, info};
-use crate::structure::FlightInfo;
-use neo4rs::{Graph,query};
+use structure::SSIM;
 
 //pub struct WebData {
 //   flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
@@ -45,10 +43,11 @@ impl WebData {
     //    &self.database
     //}
     pub fn new(data_base: Graph) -> Self {
-        WebData {database: data_base }
+        WebData {
+            database: data_base,
+        }
     }
 }
-
 
 #[get("/search")]
 // async fn search(data: web::Data<WebData>,req_body:String) -> impl Responder {
@@ -76,12 +75,25 @@ impl WebData {
 //     HttpResponse::Ok().body(result_string)
 // }
 
-async fn search(data: web::Data<WebData>,reqbody:String) -> impl Responder {
-    let mut result = data.database.execute(query("MATCH (n) RETURN n")).await.unwrap();
+async fn search(data: web::Data<WebData>, reqbody: String) -> impl Responder {
+    if !utils::check_ib_reqbody(reqbody.clone()) {
+        return HttpResponse::BadRequest().body("Invalid request body");
+    }else{
+        
+    }
+    let mut result = data
+        .database
+        .execute(query("MATCH (n) RETURN n"))
+        .await
+        .unwrap();
     let mut collect = String::new();
     while let Ok(Some(row)) = result.next().await {
         let node: neo4rs::Node = row.get("n").unwrap();
-        collect.push_str(&format!("Node ID: {}, Labels: {:?}\n", node.id(), node.labels()));
+        collect.push_str(&format!(
+            "Node ID: {}, Labels: {:?}\n",
+            node.id(),
+            node.labels()
+        ));
         //println!("Node ID: {}, Labels: {:?}", node.id(), node.labels());
     }
     HttpResponse::Ok().body(collect)
@@ -98,18 +110,30 @@ async fn search(data: web::Data<WebData>,reqbody:String) -> impl Responder {
 async fn main() -> std::io::Result<()> {
     let mut file = File::open("./src/itinbuilder.json").unwrap();
     let mut contents = String::new();
-    file.read_to_string(&mut contents).expect("Failed to read config file");
-    let config:structure::Configuration = serde_json::from_str(&contents).expect("Failed to parse config file");
+    file.read_to_string(&mut contents)
+        .expect("Failed to read config file");
+    let config: structure::Configuration =
+        serde_json::from_str(&contents).expect("Failed to parse config file");
     let logfile = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(config.log().pattern())))
         .build(config.log().file())
         .expect("Failed to create file appender");
     let log_config = log4rs::Config::builder()
         .appender(Appender::builder().build("logfile", Box::new(logfile)))
-        .build(Root::builder().appender("logfile").build(log::LevelFilter::Trace))
+        .build(
+            Root::builder()
+                .appender("logfile")
+                .build(log::LevelFilter::Trace),
+        )
         .expect("Failed to build Log config");
     let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
-    let graph = Graph::new(config.neo4j().uri(), config.neo4j().username(), config.neo4j().password()).await.expect("Failed to connect to Neo4j");
+    let graph = Graph::new(
+        config.neo4j().uri(),
+        config.neo4j().username(),
+        config.neo4j().password(),
+    )
+    .await
+    .expect("Failed to connect to Neo4j");
     //let connection = utils::make_db_connection(config.database());
     // let pool = match PgPoolOptions::new()
     //     .max_connections(10)
@@ -126,15 +150,17 @@ async fn main() -> std::io::Result<()> {
     // };
     //db::check_db_status(&pool).await;
 
-    let app_state = web::Data::new(WebData{database: graph.clone()});
+    let app_state = web::Data::new(WebData {
+        database: graph.clone(),
+    });
     HttpServer::new(move || {
-    App::new()
-        .app_data(app_state.clone())
-        .service(search)
-        //.service(import_ssim)
-        //.service(services::health_check)
-        .wrap(Logger::default())
-})
+        App::new()
+            .app_data(app_state.clone())
+            .service(search)
+            //.service(import_ssim)
+            //.service(services::health_check)
+            .wrap(Logger::default())
+    })
     .bind(("127.0.0.1", 8080))?
     .run()
     .await

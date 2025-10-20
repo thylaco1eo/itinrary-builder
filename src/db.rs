@@ -1,5 +1,5 @@
-use sqlx::Pool;
 use crate::structure;
+use sqlx::Pool;
 
 pub async fn check_db_status(pool: &Pool<sqlx::Postgres>) {
     //This function checks if the ITINBUILDER schema exists in the database
@@ -9,8 +9,11 @@ pub async fn check_db_status(pool: &Pool<sqlx::Postgres>) {
             SELECT 1
             FROM information_schema.tables
             WHERE table_name = 'ITINBUILDER'
-        )"
-    ).execute(pool).await.expect("Failed to check ITINBUILDER schema status");
+        )",
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to check ITINBUILDER schema status");
     if result.rows_affected() == 0 {
         sqlx::query("CREATE SCHEMA ITINBUILDER")
             .execute(pool)
@@ -37,14 +40,14 @@ pub async fn init_table(pool: &Pool<sqlx::Postgres>) {
             arrival_station VARCHAR(3) NOT NULL,
             frequency VARCHAR(7) NOT NULL,
             flight_time INT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await
     .expect("Failed to create flights table");
 }
 
-pub async fn import_ssim(pool: &Pool<sqlx::Postgres>,flights: &Vec<structure::FlightInfo>) {
+pub async fn import_ssim(pool: &Pool<sqlx::Postgres>, flights: &Vec<structure::FlightInfo>) {
     // This function imports SSIM data into the database, It drop existing data and re-imports it.
     sqlx::query("TRUNCATE TABLE ITINBUILDER.flights")
         .execute(pool)

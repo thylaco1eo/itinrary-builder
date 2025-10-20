@@ -1,8 +1,7 @@
-use serde::Deserialize;
-use chrono::{DateTime, Utc};
-use actix_multipart::form::MultipartForm;
 use actix_multipart::form::tempfile::TempFile;
-
+use actix_multipart::form::MultipartForm;
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub struct FlightInfo {
@@ -13,11 +12,20 @@ pub struct FlightInfo {
     dpt_start_utc: DateTime<Utc>,
     dpt_end_utc: DateTime<Utc>,
     frequency: String, // 0-6 for Sun-Sat
-    flight_time: i64, // in minutes
+    flight_time: i64,  // in minutes
 }
 
-impl FlightInfo{
-    pub fn new(flt_id: String, carrier: String, dpt_start_utc: DateTime<Utc>, dpt_end_utc: DateTime<Utc>, dpt_station:String, arr_station: String, frequency: String, flight_time: i64) -> Self {
+impl FlightInfo {
+    pub fn new(
+        flt_id: String,
+        carrier: String,
+        dpt_start_utc: DateTime<Utc>,
+        dpt_end_utc: DateTime<Utc>,
+        dpt_station: String,
+        arr_station: String,
+        frequency: String,
+        flight_time: i64,
+    ) -> Self {
         FlightInfo {
             flt_id,
             carrier,
@@ -55,20 +63,19 @@ impl FlightInfo{
     }
 }
 
-
 #[derive(MultipartForm)]
-pub struct SSIM{
-    file : TempFile,
+pub struct SSIM {
+    file: TempFile,
 }
 
 impl SSIM {
     pub fn file(&mut self) -> &mut TempFile {
         &mut self.file
-    }   
+    }
 }
 
-#[derive(Deserialize,Clone)]
-pub struct DataBase{
+#[derive(Deserialize, Clone)]
+pub struct DataBase {
     host: String,
     port: String,
     username: String,
@@ -77,8 +84,20 @@ pub struct DataBase{
 }
 
 impl DataBase {
-    pub fn new(host: String, port: String, username: String, password: String, dbname: String) -> Self {
-        DataBase { host, port, username, password, dbname }
+    pub fn new(
+        host: String,
+        port: String,
+        username: String,
+        password: String,
+        dbname: String,
+    ) -> Self {
+        DataBase {
+            host,
+            port,
+            username,
+            password,
+            dbname,
+        }
     }
     pub fn host(&self) -> &String {
         &self.host
@@ -106,7 +125,11 @@ pub struct Log {
 
 impl Log {
     pub fn new(level: String, file: String, pattern: String) -> Self {
-        Log { level, file, pattern }
+        Log {
+            level,
+            file,
+            pattern,
+        }
     }
     pub fn level(&self) -> &String {
         &self.level
@@ -120,7 +143,7 @@ impl Log {
 }
 
 #[derive(Deserialize)]
-pub struct Neo4j{
+pub struct Neo4j {
     uri: String,
     username: String,
     password: String,
@@ -128,7 +151,11 @@ pub struct Neo4j{
 
 impl Neo4j {
     pub fn new(uri: String, username: String, password: String) -> Self {
-        Neo4j { uri, username, password }
+        Neo4j {
+            uri,
+            username,
+            password,
+        }
     }
     pub fn uri(&self) -> &String {
         &self.uri
@@ -138,19 +165,23 @@ impl Neo4j {
     }
     pub fn password(&self) -> &String {
         &self.password
-    } 
+    }
 }
 
 #[derive(Deserialize)]
-pub struct Configuration{
+pub struct Configuration {
     database: DataBase,
     neo4j: Neo4j,
     log: Log,
 }
 
 impl Configuration {
-    pub fn new(database: DataBase, neo4j: Neo4j,log: Log) -> Self {
-        Configuration { database, neo4j,log }
+    pub fn new(database: DataBase, neo4j: Neo4j, log: Log) -> Self {
+        Configuration {
+            database,
+            neo4j,
+            log,
+        }
     }
     pub fn database(&self) -> &DataBase {
         &self.database
