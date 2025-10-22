@@ -38,6 +38,6 @@ pub fn make_request(reqbody: String) -> Query{
     let dep_station = &reqbody[2..5];
     let arr_station = &reqbody[5..8];
     let dep_date = &reqbody[8..15];
-    let cql = include_str!("");
-    query("")
+    let cql = include_str!("./sql/search_IB.cql");
+    query(cql).param("dep_airport",dep_station).param("arr_airport", arr_station)
 }

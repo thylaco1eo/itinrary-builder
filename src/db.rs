@@ -1,5 +1,6 @@
 use crate::structure;
 use sqlx::Pool;
+use neo4rs::Graph;
 
 pub async fn check_db_status(pool: &Pool<sqlx::Postgres>) {
     //This function checks if the ITINBUILDER schema exists in the database
@@ -70,3 +71,8 @@ pub async fn import_ssim(pool: &Pool<sqlx::Postgres>, flights: &Vec<structure::F
             .expect("Failed to insert flight data");
     }
 }
+
+pub async fn import_ssim_neo4j(graph:Graph,flights: &Vec<structure::FlightInfo>){
+    let mut txn = graph.start_txn().await.unwrap();
+}
+

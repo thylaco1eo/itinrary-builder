@@ -1,4 +1,4 @@
-MATCH (start:Airport {name:'TFU'}), (end:Airport {name:'FRA'})
+MATCH (start:Airport {name:'$dep_airport'}), (end:Airport {name:'$arr_airport'})
 CALL apoc.path.expandConfig(start, {
   relationshipFilter: "flights>",
   minLevel: 1,

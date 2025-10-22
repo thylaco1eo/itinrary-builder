@@ -1,6 +1,6 @@
 //extern crate chrono;
 mod flight_info;
-//pub mod services;
+pub mod services;
 pub mod db;
 pub mod structure;
 pub mod utils;
@@ -17,11 +17,10 @@ use log4rs::{
 };
 use neo4rs::{query, Graph};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
-use std::sync::Mutex;
 use structure::SSIM;
+
 
 //pub struct WebData {
 //   flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
@@ -78,12 +77,10 @@ impl WebData {
 async fn search(data: web::Data<WebData>, reqbody: String) -> impl Responder {
     if !utils::check_ib_reqbody(reqbody.clone()) {
         return HttpResponse::BadRequest().body("Invalid request body");
-    }else{
-        
     }
     let mut result = data
         .database
-        .execute(query("MATCH (n) RETURN n"))
+        .execute(utils::make_request(reqbody))
         .await
         .unwrap();
     let mut collect = String::new();
@@ -99,12 +96,12 @@ async fn search(data: web::Data<WebData>, reqbody: String) -> impl Responder {
     HttpResponse::Ok().body(collect)
 }
 
-//#[post("/import_ssim")]
-// async fn import_ssim(data: web::Data<WebData>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
-//     let flights = services::data_service::import_schedule_file(multipart_form.file().file.as_file_mut());
-//     db::import_ssim(&data.database, &flights).await;
-//     HttpResponse::Ok().body("File imported successfully")
-// }
+#[post("/import_ssim")]
+async fn import_ssim(data: web::Data<WebData>, mut multipart_form: MultipartForm<SSIM>) -> impl Responder {
+    let flights = services::data_service::import_schedule_file(multipart_form.file().file.as_file_mut());
+    //db::import_ssim(&data.database, &flights).await;
+    HttpResponse::Ok().body("File imported successfully")
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
