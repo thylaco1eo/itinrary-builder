@@ -1,6 +1,6 @@
 use crate::structure;
 use sqlx::Pool;
-use neo4rs::Graph;
+use neo4rs::{BoltList, BoltMap, BoltString, BoltType, Graph, query};
 
 pub async fn check_db_status(pool: &Pool<sqlx::Postgres>) {
     //This function checks if the ITINBUILDER schema exists in the database
@@ -73,6 +73,35 @@ pub async fn import_ssim(pool: &Pool<sqlx::Postgres>, flights: &Vec<structure::F
 }
 
 pub async fn import_ssim_neo4j(graph:Graph,flights: &Vec<structure::FlightInfo>){
-    let mut txn = graph.start_txn().await.unwrap();
+    let flight_maps: Vec<BoltType> = flights.iter().map(|f| {
+        let mut map = BoltMap::new();
+        map.put(BoltString::from("flt_id"), f.flt_id().clone().into());
+        map.put(BoltString::from("carrier"), f.carrier().clone().into());
+        map.put(BoltString::from("dpt_station"), f.dpt_station().clone().into());
+        map.put(BoltString::from("arr_station"), f.arr_station().clone().into());
+        map.put(BoltString::from("dpt_start_utc"), f.dpt_start_utc().to_rfc3339().into());
+        map.put(BoltString::from("dpt_end_utc"), f.dpt_end_utc().to_rfc3339().into());
+        map.put(BoltString::from("frequency"), f.frequency().clone().into());
+        map.put(BoltString::from("flight_time"), f.flight_time().into());
+        BoltType::Map(map)
+    }).collect();
+    
+    let q = query(
+        "UNWIND $flights AS flight
+         MERGE (dpt:Airport {code: flight.dpt_station})
+         MERGE (arr:Airport {code: flight.arr_station})
+         CREATE (dpt)-[:FLIGHT {
+             flt_id: flight.flt_id,
+             carrier: flight.carrier,
+             dpt_start_utc: datetime(flight.dpt_start_utc),
+             dpt_end_utc: datetime(flight.dpt_end_utc),
+             frequency: flight.frequency,
+             flight_time: flight.flight_time
+         }]->(arr)"
+    )
+    .param("flights", BoltList::from(flight_maps));
+    
+    graph.run(q).await?;
 }
 
+pub async fn create_airport_neo4j(){}

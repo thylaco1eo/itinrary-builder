@@ -193,3 +193,16 @@ impl Configuration {
         &self.neo4j
     }
 }
+
+
+#[derive(Deserialize)]
+pub struct Airport{
+    id: String,
+    name: String,
+    country: String,
+    timezone: String
+}
+
+impl Airport {
+    
+}
