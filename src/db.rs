@@ -1,6 +1,6 @@
-use crate::structure;
+use crate::structure::{self, Airport};
 use sqlx::Pool;
-use neo4rs::{BoltList, BoltMap, BoltString, BoltType, Graph, query};
+use neo4rs::{BoltList, BoltMap, BoltString, BoltType, Graph, query,Row};
 
 pub async fn check_db_status(pool: &Pool<sqlx::Postgres>) {
     //This function checks if the ITINBUILDER schema exists in the database
@@ -104,4 +104,27 @@ pub async fn import_ssim_neo4j(graph:Graph,flights: &Vec<structure::FlightInfo>)
     graph.run(q).await?;
 }
 
-pub async fn create_airport_neo4j(){}
+pub async fn create_airport_neo4j(graph: Graph, airport: Airport) -> Result<bool, neo4rs::Error> {
+    // Check if airport with given id exists
+    let q = query("MATCH (a:Airport {id: $id}) RETURN a IS NOT NULL AS exists")
+        .param("id", airport.id().clone());
+    let mut result: DetachedRowStream= graph.run(q).await.unwrap();
+    if let Some(row_res) = result.next().await {
+        let row = row_res?;
+        let exists = row.get("exists").and_then(|v| v.as_bool()).unwrap_or(false);
+        if exists {
+            return Ok(false);
+        }
+    }
+
+    // Not found -> create and return true
+    let q = query(
+        "CREATE (a:Airport {id: $id, name: $name, city: $city, country: $country})",
+    )
+    .param("id", airport.id().clone())
+    .param("name", airport.name().clone())
+    .param("city", airport.city().clone())
+    .param("country", airport.country().clone());
+    graph.run(q).await?;
+    Ok(true)
+}

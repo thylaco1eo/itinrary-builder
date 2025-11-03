@@ -199,10 +199,22 @@ impl Configuration {
 pub struct Airport{
     id: String,
     name: String,
+    city: String,
     country: String,
     timezone: String
 }
 
 impl Airport {
-    
+    pub fn id(&self) -> &String {
+        &self.id
+    }
+    pub fn name(&self) -> &String {
+        &self.name
+    }
+    pub fn city(&self) -> &String {
+        &self.city
+    }
+    pub fn country(&self) -> &String {
+        &self.country
+    }
 }

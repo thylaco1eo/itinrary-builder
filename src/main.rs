@@ -154,6 +154,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(app_state.clone())
             .service(search)
+            .service(web::scope("/schedule").route("/airport", web::post()))
             //.service(import_ssim)
             //.service(services::health_check)
             .wrap(Logger::default())
