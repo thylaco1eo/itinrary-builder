@@ -1,9 +1,10 @@
 use std::fs::File;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, Utc};
-use crate::structure::FlightInfo;
+use crate::structure::{FlightInfo, WebData,Airport};
 use std::str::FromStr;
 use std::io::Read;
-use crate::db;
+use actix_web::{web, Responder, HttpResponse};
+use crate::db::*;
 
 pub fn import_schedule_file(file: &mut File)->Vec<FlightInfo>{
     let mut contents = String::new();
@@ -45,3 +46,17 @@ pub fn import_schedule_file(file: &mut File)->Vec<FlightInfo>{
 //     let json_data = serde_json::to_string(&dpt_apt).expect("Failed to serialize data");
 //     fs::write(cache_path, json_data).expect("Failed to write cache file");
 // }
+
+pub async fn creat_airport(data: web::Data<WebData>, form: web::Form<Airport>) -> impl Responder {
+    let result = create_airport_neo4j(data.database(), form.0).await;
+    match result {
+        Ok(created) => {
+            if created {
+                HttpResponse::Created().body("Airport created successfully")
+            } else {
+                HttpResponse::Conflict().body("Airport already exists")
+            }
+        }
+        Err(e) => HttpResponse::InternalServerError().body(format!("Error creating airport: {}", e))
+    }
+}

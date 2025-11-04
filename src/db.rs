@@ -72,7 +72,7 @@ pub async fn import_ssim(pool: &Pool<sqlx::Postgres>, flights: &Vec<structure::F
     }
 }
 
-pub async fn import_ssim_neo4j(graph:Graph,flights: &Vec<structure::FlightInfo>){
+pub async fn import_ssim_neo4j(graph:Graph,flights: &Vec<structure::FlightInfo>) -> Result<(), neo4rs::Error> {
     let flight_maps: Vec<BoltType> = flights.iter().map(|f| {
         let mut map = BoltMap::new();
         map.put(BoltString::from("flt_id"), f.flt_id().clone().into());
@@ -99,19 +99,19 @@ pub async fn import_ssim_neo4j(graph:Graph,flights: &Vec<structure::FlightInfo>)
              flight_time: flight.flight_time
          }]->(arr)"
     )
-    .param("flights", BoltList::from(flight_maps));
+    .param("flights", flight_maps);
     
     graph.run(q).await?;
+    Ok(())
 }
 
-pub async fn create_airport_neo4j(graph: Graph, airport: Airport) -> Result<bool, neo4rs::Error> {
+pub async fn create_airport_neo4j(graph: &Graph, airport: Airport) -> Result<bool, neo4rs::Error> {
     // Check if airport with given id exists
     let q = query("MATCH (a:Airport {id: $id}) RETURN a IS NOT NULL AS exists")
         .param("id", airport.id().clone());
-    let mut result: DetachedRowStream= graph.run(q).await.unwrap();
-    if let Some(row_res) = result.next().await {
-        let row = row_res?;
-        let exists = row.get("exists").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut result = graph.execute(q).await?;
+    if let Ok(Some(row)) = result.next().await {
+        let exists: bool = row.get("exists").unwrap_or(false);
         if exists {
             return Ok(false);
         }
@@ -119,12 +119,13 @@ pub async fn create_airport_neo4j(graph: Graph, airport: Airport) -> Result<bool
 
     // Not found -> create and return true
     let q = query(
-        "CREATE (a:Airport {id: $id, name: $name, city: $city, country: $country})",
+        "CREATE (a:Airport {id: $id, name: $name, city: $city, country: $country, timezone: $timezone})",
     )
     .param("id", airport.id().clone())
-    .param("name", airport.name().clone())
-    .param("city", airport.city().clone())
-    .param("country", airport.country().clone());
+    .param("name", airport.name().map(|s| s.as_str()).unwrap_or(""))
+    .param("city", airport.city().map(|s| s.as_str()).unwrap_or(""))
+    .param("country", airport.country().map(|s| s.as_str()).unwrap_or(""))
+    .param("timezone", airport.timezone().map(|s| s.as_str()).unwrap_or(""));
     graph.run(q).await?;
     Ok(true)
 }

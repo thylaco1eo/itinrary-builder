@@ -19,34 +19,7 @@ use neo4rs::{query, Graph};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use std::fs::File;
 use std::io::prelude::*;
-use structure::SSIM;
-
-
-//pub struct WebData {
-//   flights: Mutex<HashMap<String, Vec<FlightInfo>>>,
-//    database: Pool<Postgres>,
-//}
-
-pub struct WebData {
-    database: Graph,
-}
-
-impl WebData {
-    // pub fn new(flights: Mutex<HashMap<String, Vec<FlightInfo>>>, data_base: Pool<Postgres>) -> Self {
-    //     WebData { flights, database: data_base }
-    // }
-    //pub fn flights(&self) -> &Mutex<HashMap<String, Vec<FlightInfo>>> {
-    //    &self.flights
-    //}
-    //pub fn db_info(&self) -> &Pool<Postgres> {
-    //    &self.database
-    //}
-    pub fn new(data_base: Graph) -> Self {
-        WebData {
-            database: data_base,
-        }
-    }
-}
+use structure::*;
 
 #[get("/search")]
 // async fn search(data: web::Data<WebData>,req_body:String) -> impl Responder {
@@ -79,7 +52,7 @@ async fn search(data: web::Data<WebData>, reqbody: String) -> impl Responder {
         return HttpResponse::BadRequest().body("Invalid request body");
     }
     let mut result = data
-        .database
+        .database()
         .execute(utils::make_request(reqbody))
         .await
         .unwrap();
@@ -147,9 +120,7 @@ async fn main() -> std::io::Result<()> {
     // };
     //db::check_db_status(&pool).await;
 
-    let app_state = web::Data::new(WebData {
-        database: graph.clone(),
-    });
+    let app_state = web::Data::new(WebData::new(graph.clone()));
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())

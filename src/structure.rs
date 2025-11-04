@@ -1,7 +1,33 @@
 use actix_multipart::form::tempfile::TempFile;
 use actix_multipart::form::MultipartForm;
 use chrono::{DateTime, Utc};
+use neo4rs::Graph;
 use serde::Deserialize;
+
+pub struct WebData {
+    database: Graph,
+}
+
+impl WebData {
+    // pub fn new(flights: Mutex<HashMap<String, Vec<FlightInfo>>>, data_base: Pool<Postgres>) -> Self {
+    //     WebData { flights, database: data_base }
+    // }
+    //pub fn flights(&self) -> &Mutex<HashMap<String, Vec<FlightInfo>>> {
+    //    &self.flights
+    //}
+    //pub fn db_info(&self) -> &Pool<Postgres> {
+    //    &self.database
+    //}
+    pub fn new(data_base: Graph) -> Self {
+        WebData {
+            database: data_base,
+        }
+    }
+
+    pub fn database(&self) -> &Graph {
+        &self.database
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FlightInfo {
@@ -198,23 +224,35 @@ impl Configuration {
 #[derive(Deserialize)]
 pub struct Airport{
     id: String,
-    name: String,
-    city: String,
-    country: String,
-    timezone: String
+    name: Option<String>,
+    city: Option<String>,
+    country: Option<String>,
+    timezone: Option<String>
 }
 
 impl Airport {
+    pub fn new(id: String, name: Option<String>, city: Option<String>, country: Option<String>, timezone: Option<String>) -> Self {
+        Airport {
+            id,
+            name,
+            city,
+            country,
+            timezone
+        }
+    }
     pub fn id(&self) -> &String {
         &self.id
     }
-    pub fn name(&self) -> &String {
-        &self.name
+    pub fn name(&self) -> Option<&String> {
+        self.name.as_ref()
     }
-    pub fn city(&self) -> &String {
-        &self.city
+    pub fn city(&self) -> Option<&String> {
+        self.city.as_ref()
     }
-    pub fn country(&self) -> &String {
-        &self.country
+    pub fn country(&self) -> Option<&String> {
+        self.country.as_ref()
+    }
+    pub fn timezone(&self) -> Option<&String> {
+        self.timezone.as_ref()
     }
 }
