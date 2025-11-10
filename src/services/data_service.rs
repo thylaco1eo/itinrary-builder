@@ -47,7 +47,7 @@ pub fn import_schedule_file(file: &mut File)->Vec<FlightInfo>{
 //     fs::write(cache_path, json_data).expect("Failed to write cache file");
 // }
 
-pub async fn creat_airport(data: web::Data<WebData>, form: web::Form<Airport>) -> impl Responder {
+pub async fn create_airport(data: web::Data<WebData>, form: web::Form<Airport>) -> impl Responder {
     let result = create_airport_neo4j(data.database(), form.0).await;
     match result {
         Ok(created) => {
@@ -58,5 +58,33 @@ pub async fn creat_airport(data: web::Data<WebData>, form: web::Form<Airport>) -
             }
         }
         Err(e) => HttpResponse::InternalServerError().body(format!("Error creating airport: {}", e))
+    }
+}
+
+pub async fn update_airport(data: web::Data<WebData>, form: web::Form<Airport>) -> impl Responder {
+    let result = update_airport_neo4j(data.database(), form.0).await;
+    match result {
+        Ok(updated) => {
+            if updated {
+                HttpResponse::Ok().body("Airport updated successfully")
+            } else {
+                HttpResponse::NotFound().body("Airport not found")
+            }
+        }
+        Err(e) => HttpResponse::InternalServerError().body(format!("Error updating airport: {}", e))
+    }
+}
+
+pub async fn delete_airport(data: web::Data<WebData>, code: web::Path<String>) -> impl Responder {
+    let result = delete_airport_neo4j(data.database(), code.into_inner()).await;
+    match result {
+        Ok(deleted) => {
+            if deleted {
+                HttpResponse::Ok().body("Airport deleted successfully")
+            } else {
+                HttpResponse::NotFound().body("Airport not found")
+            }
+        }
+        Err(e) => HttpResponse::InternalServerError().body(format!("Error deleting airport: {}", e))
     }
 }

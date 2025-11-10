@@ -1,6 +1,6 @@
 use crate::structure::{self, Airport};
 use sqlx::Pool;
-use neo4rs::{BoltList, BoltMap, BoltString, BoltType, Graph, query,Row};
+use neo4rs::{BoltMap, BoltString, BoltType, Graph, query};
 
 pub async fn check_db_status(pool: &Pool<sqlx::Postgres>) {
     //This function checks if the ITINBUILDER schema exists in the database
@@ -126,6 +126,58 @@ pub async fn create_airport_neo4j(graph: &Graph, airport: Airport) -> Result<boo
     .param("city", airport.city().map(|s| s.as_str()).unwrap_or(""))
     .param("country", airport.country().map(|s| s.as_str()).unwrap_or(""))
     .param("timezone", airport.timezone().map(|s| s.as_str()).unwrap_or(""));
+    graph.run(q).await?;
+    Ok(true)
+}
+
+pub async fn update_airport_neo4j(graph: &Graph, airport: Airport) -> Result<bool, neo4rs::Error> {
+    // Check if airport with given id exists
+    let q = query("MATCH (a:Airport {id: $id}) RETURN a IS NOT NULL AS exists")
+        .param("id", airport.id().clone());
+    let mut result = graph.execute(q).await?;
+    if let Ok(Some(row)) = result.next().await {
+        let exists: bool = row.get("exists").unwrap_or(false);
+        if !exists {
+            return Ok(false);
+        }
+    } else {
+        return Ok(false);
+    }
+
+    // Found -> update and return true
+    let q = query(
+        "MATCH (a:Airport {id: $id})
+         SET a.name = $name,
+             a.city = $city,
+             a.country = $country,
+             a.timezone = $timezone",
+    )
+    .param("id", airport.id().clone())
+    .param("name", airport.name().map(|s| s.as_str()).unwrap_or(""))
+    .param("city", airport.city().map(|s| s.as_str()).unwrap_or(""))
+    .param("country", airport.country().map(|s| s.as_str()).unwrap_or(""))
+    .param("timezone", airport.timezone().map(|s| s.as_str()).unwrap_or(""));
+    graph.run(q).await?;
+    Ok(true)
+}
+
+pub async fn delete_airport_neo4j(graph: &Graph, code: String) -> Result<bool, neo4rs::Error> {
+    // Check if airport with given code exists
+    let q = query("MATCH (a:Airport {id: $code}) RETURN a IS NOT NULL AS exists")
+        .param("code", code.clone());
+    let mut result = graph.execute(q).await?;
+    if let Ok(Some(row)) = result.next().await {
+        let exists: bool = row.get("exists").unwrap_or(false);
+        if !exists {
+            return Ok(false);
+        }
+    } else {
+        return Ok(false);
+    }
+
+    // Found -> delete and return true
+    let q = query("MATCH (a:Airport {id: $code}) DETACH DELETE a")
+        .param("code", code.clone());
     graph.run(q).await?;
     Ok(true)
 }
