@@ -3,10 +3,10 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, Utc};
 use crate::structure::{FlightInfo, WebData,Airport};
 use std::str::FromStr;
 use std::io::Read;
-use actix_web::{web, Responder, HttpResponse};
+use actix_web::{web, Responder, HttpResponse,put,delete,post};
 use crate::db::*;
 
-pub fn import_schedule_file(file: &mut File)->Vec<FlightInfo>{
+fn import_schedule_file(file: &mut File)->Vec<FlightInfo>{
     let mut contents = String::new();
     file.read_to_string(&mut contents).expect("Should have been able to read the file");
     let mut flights: Vec<FlightInfo> = Vec::new();
@@ -47,6 +47,7 @@ pub fn import_schedule_file(file: &mut File)->Vec<FlightInfo>{
 //     fs::write(cache_path, json_data).expect("Failed to write cache file");
 // }
 
+#[put("/airport")]
 pub async fn create_airport(data: web::Data<WebData>, form: web::Form<Airport>) -> impl Responder {
     let result = create_airport_neo4j(data.database(), form.0).await;
     match result {
@@ -61,6 +62,7 @@ pub async fn create_airport(data: web::Data<WebData>, form: web::Form<Airport>) 
     }
 }
 
+#[post("/airport")]
 pub async fn update_airport(data: web::Data<WebData>, form: web::Form<Airport>) -> impl Responder {
     let result = update_airport_neo4j(data.database(), form.0).await;
     match result {
@@ -74,7 +76,7 @@ pub async fn update_airport(data: web::Data<WebData>, form: web::Form<Airport>) 
         Err(e) => HttpResponse::InternalServerError().body(format!("Error updating airport: {}", e))
     }
 }
-
+#[delete("/airport/{code}")]
 pub async fn delete_airport(data: web::Data<WebData>, code: web::Path<String>) -> impl Responder {
     let result = delete_airport_neo4j(data.database(), code.into_inner()).await;
     match result {

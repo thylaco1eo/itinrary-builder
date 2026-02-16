@@ -1,30 +1,21 @@
 use actix_multipart::form::tempfile::TempFile;
 use actix_multipart::form::MultipartForm;
 use chrono::{DateTime, Utc};
-use neo4rs::Graph;
 use serde::Deserialize;
+use surrealdb::{Surreal, engine::any};
 
 pub struct WebData {
-    database: Graph,
+    database: Surreal<any::Any>,
 }
 
 impl WebData {
-    // pub fn new(flights: Mutex<HashMap<String, Vec<FlightInfo>>>, data_base: Pool<Postgres>) -> Self {
-    //     WebData { flights, database: data_base }
-    // }
-    //pub fn flights(&self) -> &Mutex<HashMap<String, Vec<FlightInfo>>> {
-    //    &self.flights
-    //}
-    //pub fn db_info(&self) -> &Pool<Postgres> {
-    //    &self.database
-    //}
-    pub fn new(data_base: Graph) -> Self {
+    pub fn new(data_base: Surreal<any::Any>) -> Self {
         WebData {
             database: data_base,
         }
     }
 
-    pub fn database(&self) -> &Graph {
+    pub fn database(&self) -> &Surreal<any::Any> {
         &self.database
     }
 }
@@ -106,6 +97,7 @@ pub struct DataBase {
     port: String,
     username: String,
     password: String,
+    namespace: String,
     dbname: String,
 }
 
@@ -115,6 +107,7 @@ impl DataBase {
         port: String,
         username: String,
         password: String,
+        namespace: String,
         dbname: String,
     ) -> Self {
         DataBase {
@@ -122,6 +115,7 @@ impl DataBase {
             port,
             username,
             password,
+            namespace,
             dbname,
         }
     }
@@ -139,6 +133,9 @@ impl DataBase {
     }
     pub fn dbname(&self) -> &String {
         &self.dbname
+    }
+    pub fn namespace(&self) -> &String {
+        &self.namespace
     }
 }
 
@@ -169,43 +166,15 @@ impl Log {
 }
 
 #[derive(Deserialize)]
-pub struct Neo4j {
-    uri: String,
-    username: String,
-    password: String,
-}
-
-impl Neo4j {
-    pub fn new(uri: String, username: String, password: String) -> Self {
-        Neo4j {
-            uri,
-            username,
-            password,
-        }
-    }
-    pub fn uri(&self) -> &String {
-        &self.uri
-    }
-    pub fn username(&self) -> &String {
-        &self.username
-    }
-    pub fn password(&self) -> &String {
-        &self.password
-    }
-}
-
-#[derive(Deserialize)]
 pub struct Configuration {
     database: DataBase,
-    neo4j: Neo4j,
     log: Log,
 }
 
 impl Configuration {
-    pub fn new(database: DataBase, neo4j: Neo4j, log: Log) -> Self {
+    pub fn new(database: DataBase,log: Log) -> Self {
         Configuration {
             database,
-            neo4j,
             log,
         }
     }
@@ -215,44 +184,46 @@ impl Configuration {
     pub fn log(&self) -> &Log {
         &self.log
     }
-    pub fn neo4j(&self) -> &Neo4j {
-        &self.neo4j
-    }
 }
 
 
 #[derive(Deserialize)]
 pub struct Airport{
     id: String,
-    name: Option<String>,
-    city: Option<String>,
-    country: Option<String>,
-    timezone: Option<String>
+    name: String,
+    city: String,
+    country: String,
+    timezone: String,
+    mct: usize,
 }
 
 impl Airport {
-    pub fn new(id: String, name: Option<String>, city: Option<String>, country: Option<String>, timezone: Option<String>) -> Self {
-        Airport {
+    pub fn new(id: String, name: String, city: String, country: String, timezone: String, mct: usize) -> Self {
+        Self {
             id,
             name,
-            city,
-            country,
-            timezone
+            city : "".to_string(),
+            country: "".to_string(),
+            timezone,
+            mct : 1440
         }
     }
     pub fn id(&self) -> &String {
         &self.id
     }
-    pub fn name(&self) -> Option<&String> {
-        self.name.as_ref()
+    pub fn name(&self) -> &String {
+        &self.name
     }
-    pub fn city(&self) -> Option<&String> {
-        self.city.as_ref()
+    pub fn city(&self) -> &String {
+        &self.city
     }
-    pub fn country(&self) -> Option<&String> {
-        self.country.as_ref()
+    pub fn country(&self) -> &String {
+        &self.country
     }
-    pub fn timezone(&self) -> Option<&String> {
-        self.timezone.as_ref()
+    pub fn timezone(&self) -> &String {
+        &self.timezone
+    }
+    pub fn mct(&self) -> &usize {
+        &self.mct
     }
 }
