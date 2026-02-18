@@ -25,6 +25,9 @@ pub async fn add_airport(data: web::Data<WebData>, form: web::Form<AirportRow>) 
     match db::repository::airport_repo::add_airport(&data.database(), row).await {
         Ok(true) => Ok(HttpResponse::Created().json(json!({"status": "ok"}))),
         Ok(false) => Ok(HttpResponse::Conflict().json(json!({"status": "conflict"}))),
-        Err(_) => Ok(HttpResponse::InternalServerError().json(json!({"status": "error"})))
+        Err(e) => {
+            log::error!("Error adding airport: {}", e);
+            Ok(HttpResponse::InternalServerError().json(json!({"status": "error", "message": e.to_string()})))
+        }
     }
 }

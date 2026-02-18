@@ -41,7 +41,7 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to build Log config");
     let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
 
-    let database = connect("wss://hidden-island-06du7e0gu1sr9cn8q639utv8hs.aws-euw1.surreal.cloud").await.expect("Failed to connect to SurrealDB");
+    let database = connect("wss://elegant-lotus-06e6vsqajhrt79s0hd50vftavs.aws-euw1.surreal.cloud/").await.expect("Failed to connect to SurrealDB");
     database.signin(DBRoot {
         username: config.database().username().to_string(),
         password: config.database().password().to_string(),

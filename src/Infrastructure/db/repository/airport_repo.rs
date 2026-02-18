@@ -13,6 +13,18 @@ pub async fn add_airport(db: &Surreal<Any>, airport: AirportRow) -> surrealdb::R
     if exists {
         return Ok(false);
     }
-    let result: Option<AirportRow> = db.insert(("airport", id)).content(airport).await?;
-    Ok(result.is_some())
+    
+    // Use raw query to ensure correct insertion if high-level API fails
+    let _response = db.query("CREATE type::record('airport',$id) SET code = $code, timezone = $timezone, name = $name, city = $city, country = $country, location = $location, mct = $mct")
+        .bind(("id",id))
+        .bind(("code", airport.code.code))
+        .bind(("timezone", airport.timezone))
+        .bind(("name", airport.name))
+        .bind(("city", airport.city))
+        .bind(("country", airport.country))
+        .bind(("location", (airport.longitude, airport.latitude)))
+        .bind(("mct", airport.mct))
+        .await?;
+        
+    Ok(true)
 }

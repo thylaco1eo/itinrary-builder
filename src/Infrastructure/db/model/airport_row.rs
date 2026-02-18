@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use crate::domain::airport::{Airport, AirportCode,AirportCodeError};
-use surrealdb::types::{Geometry, Kind, SurrealValue, Value};
-use surrealdb::types::Kind::Object;
-use crate::Infrastructure::db::model::flight_row::FlightRow;
+use surrealdb::types::{Kind, SurrealValue, Value};
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(transparent)]
@@ -24,7 +22,8 @@ pub struct AirportRow {
     pub name: Option<String>,
     pub city: Option<String>,
     pub country: Option<String>,
-    pub location:Geometry,
+    pub latitude:f64,
+    pub longitude:f64,
     pub mct: Option<u32>,
 }
 
@@ -55,17 +54,11 @@ impl TryFrom<AirportRow> for Airport {
     type Error = AirportRowError;
 
     fn try_from(row: AirportRow) -> Result<Self, Self::Error> {
-        let point = match row.location {
-            Geometry::Point(p) => p,
-            _ => return Err(AirportRowError::InvalidLocationType),
-        };
-        let longitude = point.x();
-        let latitude = point.y();
 
-        if latitude < -90.0 || latitude > 90.0 {
+        if row.latitude < -90.0 || row.latitude > 90.0 {
             return Err(AirportRowError::InvalidLatitude);
         }
-        if longitude < -180.0 || longitude > 180.0 {
+        if row.longitude < -180.0 || row.longitude > 180.0 {
             return Err(AirportRowError::InvalidLongitude);
         }
 
@@ -75,8 +68,8 @@ impl TryFrom<AirportRow> for Airport {
             row.name,
             row.city,
             row.country,
-            latitude,
-            longitude,
+            row.latitude,
+            row.longitude,
             row.mct
         ))
     }
@@ -92,7 +85,13 @@ impl SurrealValue for AirportRow {
     }
 
     fn into_value(self) -> Value {
-        serde_json::from_value(serde_json::to_value(self).unwrap_or_default()).unwrap_or(Value::None)
+        match serde_json::to_value(self) {
+            Ok(v) => match v {
+                serde_json::Value::Object(o) => Value::Object(o.into_iter().map(|(k, v)| (k, serde_json::from_value(v).unwrap_or(Value::None))).collect()),
+                _ => Value::None,
+            },
+            Err(_) => Value::None,
+        }
     }
 
     fn from_value(value: Value) -> surrealdb::types::anyhow::Result<Self>

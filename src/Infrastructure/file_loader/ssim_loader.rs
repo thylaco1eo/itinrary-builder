@@ -1,7 +1,7 @@
 use chrono::{NaiveDate, NaiveTime};
 use std::str::FromStr;
 use anyhow::{anyhow, Result};
-
+use crate::Infrastructure::file_loader::dei::Dei;
 // --- Enums & Helper Types ---
 
 #[derive(Debug, PartialEq)]
@@ -74,21 +74,13 @@ pub struct FlightLegRecord {
     pub record_serial_number: u32,    // Bytes 195-200
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SegmentDataRecord {
-    // Linkage to Type 3
-    pub airline_designator: String,
-    pub flight_number: String,
-    pub itinerary_variation: u8,
-    pub leg_sequence: u8,
-
-    // Segment Specifics
-    pub board_point: String,          // Bytes 34-36
-    pub off_point: String,            // Bytes 37-39
-    pub data_element_id: String,      // Bytes 31-33 (DEI)
-    pub data: String,                 // Bytes 40-194
-
-    pub record_serial_number: u32,
+    pub raw_dei: String, // 原始的 "050" 字符串
+    pub dei: Dei,        // 新增：解析后的强类型枚举
+    pub board_point: String,
+    pub off_point: String,
+    pub data: String,
 }
 
 #[derive(Debug)]
@@ -197,16 +189,13 @@ impl OagParser {
                 }))
             }
             '4' => {
-                Ok(OagRecord::SegmentData(SegmentDataRecord {
-                    airline_designator: Self::parse_str(clean_line, 3, 5)?,
-                    flight_number: Self::parse_str(clean_line, 6, 9)?,
-                    itinerary_variation: Self::parse_num(clean_line, 10, 11)?,
-                    leg_sequence: Self::parse_num(clean_line, 12, 13)?,
-                    data_element_id: Self::parse_str(clean_line, 31, 33)?,
+                let dei_enum = Dei::from_code(Self::parse_str(clean_line,31,33)?.as_str());
+                Ok(OagRecord::SegmentData(SegmentDataRecord{
+                    raw_dei: Self::parse_str(clean_line,31,33)?,
+                    dei: dei_enum,
                     board_point: Self::parse_str(clean_line, 34, 36)?,
-                    off_point: Self::parse_str(clean_line, 37, 39)?,
-                    data: Self::parse_str(clean_line, 40, 194)?,
-                    record_serial_number: Self::parse_num(clean_line, 195, 200)?,
+                    off_point: Self::parse_str(line, 37, 39)?,
+                    data: Self::parse_str(line, 40, 194)?,
                 }))
             }
             '5' => {
