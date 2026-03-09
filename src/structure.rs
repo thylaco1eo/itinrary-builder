@@ -1,6 +1,5 @@
 use actix_multipart::form::tempfile::TempFile;
 use actix_multipart::form::MultipartForm;
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use surrealdb::{Surreal, engine::any};
 
@@ -20,65 +19,6 @@ impl WebData {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FlightInfo {
-    flt_id: String,
-    carrier: String,
-    dpt_station: String,
-    arr_station: String,
-    dpt_start_utc: DateTime<Utc>,
-    dpt_end_utc: DateTime<Utc>,
-    frequency: String, // 0-6 for Sun-Sat
-    flight_time: i64,  // in minutes
-}
-
-impl FlightInfo {
-    pub fn new(
-        flt_id: String,
-        carrier: String,
-        dpt_start_utc: DateTime<Utc>,
-        dpt_end_utc: DateTime<Utc>,
-        dpt_station: String,
-        arr_station: String,
-        frequency: String,
-        flight_time: i64,
-    ) -> Self {
-        FlightInfo {
-            flt_id,
-            carrier,
-            dpt_start_utc,
-            dpt_end_utc,
-            dpt_station,
-            arr_station,
-            frequency,
-            flight_time,
-        }
-    }
-    pub fn flt_id(&self) -> &String {
-        &self.flt_id
-    }
-    pub fn carrier(&self) -> &String {
-        &self.carrier
-    }
-    pub fn dpt_start_utc(&self) -> &DateTime<Utc> {
-        &self.dpt_start_utc
-    }
-    pub fn dpt_end_utc(&self) -> &DateTime<Utc> {
-        &self.dpt_end_utc
-    }
-    pub fn arr_station(&self) -> &String {
-        &self.arr_station
-    }
-    pub fn frequency(&self) -> &String {
-        &self.frequency
-    }
-    pub fn flight_time(&self) -> i64 {
-        self.flight_time
-    }
-    pub fn dpt_station(&self) -> &String {
-        &self.dpt_station
-    }
-}
 
 #[derive(MultipartForm)]
 pub struct SSIM {
@@ -183,47 +123,5 @@ impl Configuration {
     }
     pub fn log(&self) -> &Log {
         &self.log
-    }
-}
-
-
-#[derive(Deserialize)]
-pub struct Airport{
-    id: String,
-    name: String,
-    city: String,
-    country: String,
-    timezone: String,
-    mct: usize,
-}
-
-impl Airport {
-    pub fn new(id: String, name: String, city: String, country: String, timezone: String, mct: usize) -> Self {
-        Self {
-            id,
-            name,
-            city : "".to_string(),
-            country: "".to_string(),
-            timezone,
-            mct : 1440
-        }
-    }
-    pub fn id(&self) -> &String {
-        &self.id
-    }
-    pub fn name(&self) -> &String {
-        &self.name
-    }
-    pub fn city(&self) -> &String {
-        &self.city
-    }
-    pub fn country(&self) -> &String {
-        &self.country
-    }
-    pub fn timezone(&self) -> &String {
-        &self.timezone
-    }
-    pub fn mct(&self) -> &usize {
-        &self.mct
     }
 }

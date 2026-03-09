@@ -1,9 +1,10 @@
-use chrono::{NaiveDate, NaiveDateTime, Timelike};
+use std::str::FromStr;
+use chrono::{NaiveDate, DateTime, Utc, TimeZone, FixedOffset};
 use serde::{Deserialize, Serialize};
 use crate::domain::airport::AirportCode;
 use crate::domain::flight::Flight;
 use crate::domain::flightplan::FlightPlan;
-use surrealdb::types::{Kind, SurrealValue, Value};
+use surrealdb_types::{SurrealValue,RecordId};
 
 #[derive(Debug)]
 pub enum FlightRowError {
@@ -13,36 +14,16 @@ pub enum FlightRowError {
 }
 
 /// 数据库或 CSV 行结构
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, SurrealValue)]
 pub struct FlightRow {
-    pub flight_key: String,
+    pub id: RecordId,
     pub company: String,
+    pub flight_num: String,
     pub origin_code: String,
     pub destination_code: String,
-    pub dep_local: NaiveDateTime,
-    pub arr_local: NaiveDateTime,
+    pub dep_local: DateTime<Utc>,
+    pub arr_local: DateTime<Utc>,
     pub block_time_minutes: u32, // 持久化为分钟
-}
-
-impl SurrealValue for FlightRow {
-    fn kind_of() -> Kind {
-        Kind::Object
-    }
-
-    fn is_value(value: &Value) -> bool {
-        matches!(value, Value::Object(_))
-    }
-
-    fn into_value(self) -> Value {
-        serde_json::from_value(serde_json::to_value(self).unwrap_or_default()).unwrap_or(Value::None)
-    }
-
-    fn from_value(value: Value) -> surrealdb::types::anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(serde_json::from_value(serde_json::to_value(value)?)?)
-    }
 }
 
 
@@ -61,6 +42,7 @@ impl TryFrom<FlightRow> for Flight {
 
         Ok(Flight::new(
             row.company,
+            row.flight_num,
             origin,
             destination,
             row.dep_local,
@@ -80,13 +62,17 @@ impl FlightRow {
             flight_plan.destination.as_str(),
             date.format("%Y-%m-%d")
         );
+        let dep_offset = FixedOffset::from_str(flight_plan.dep_tz.as_str()).unwrap();
+        let arr_offset = FixedOffset::from_str(flight_plan.arr_tz.as_str()).unwrap();
         FlightRow{
-            flight_key: id_str,
+            id: RecordId::new("flight",id_str.as_str()),
             company: flight_plan.company.clone(),
+            flight_num: flight_plan.flight_no.clone(),
             origin_code: flight_plan.origin.as_str().to_string(),
             destination_code: flight_plan.destination.as_str().to_string(),
-            dep_local: date.and_hms_opt(flight_plan.dep_time.hour(), flight_plan.dep_time.minute(), 0).unwrap(),
-            arr_local: date.and_hms_opt(flight_plan.arr_time.hour(), flight_plan.arr_time.minute(), 0).unwrap(),
+            //dep_local: date.and_hms_opt(flight_plan.dep_time.hour(), flight_plan.dep_time.minute(), 0).unwrap(),
+            dep_local: dep_offset.from_local_datetime(&date.and_time(flight_plan.dep_time)).single().map(|dt| dt.to_utc()).unwrap(),
+            arr_local: arr_offset.from_local_datetime(&date.and_time(flight_plan.arr_time)).single().map(|dt| dt.to_utc()).unwrap(),
             block_time_minutes: flight_plan.block_time.num_minutes() as u32,
         }
     }

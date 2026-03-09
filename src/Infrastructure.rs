@@ -1,2 +1,2 @@
 pub mod db;
-mod file_loader;
+pub mod file_loader;

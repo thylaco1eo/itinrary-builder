@@ -1,39 +1,20 @@
 use serde::{Deserialize, Serialize};
-use surrealdb::types::{Kind, SurrealValue, Value};
+use surrealdb::types::{SurrealValue,RecordId};
 
-#[derive(Serialize,Deserialize,Clone)]
+#[derive(Serialize,Deserialize,Clone,SurrealValue)]
 pub struct Route {
-    pub id: String,
+    #[surreal(rename = "in")]
+    dep_station: RecordId,
+    #[surreal(rename = "out")]
+    arr_station: RecordId,
+    pub id: RecordId,
     pub flights: Vec<String>,
-}
-
-impl SurrealValue for Route {
-    fn kind_of() -> Kind {
-        Kind::Object
-    }
-
-    fn is_value(value: &Value) -> bool {
-        matches!(value, Value::Object(_))
-    }
-
-    fn into_value(self) -> Value {
-        serde_json::from_value(serde_json::to_value(self).unwrap_or_default()).unwrap_or(Value::None)
-    }
-
-    fn from_value(value: Value) -> surrealdb::types::anyhow::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(serde_json::from_value(serde_json::to_value(value)?)?)
-    }
+    pub companies: Vec<String>,
 }
 
 impl Route {
-    pub fn new(id: String, flights: Vec<String>) -> Self {
-        Self { id, flights }
-    }
-    pub fn id(&self) -> &str {
-        &self.id
+    pub fn new(dep_station: RecordId,arr_station:RecordId,id: RecordId, flights: Vec<String>,companies: Vec<String>) -> Self {
+        Self { dep_station,arr_station, id, flights, companies}
     }
     pub fn flights(&self) -> &[String] {
         &self.flights

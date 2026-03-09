@@ -1,28 +1,31 @@
-use chrono::{NaiveDateTime, Duration,DateTime, Utc,TimeZone, Weekday};
+use chrono::{Duration,DateTime, Utc};
 use crate::domain::airport::AirportCode;
 use chrono_tz::Tz;
 
 #[derive(Clone, Debug)]
 pub struct Flight {
     company: String,
+    flight_id: String,
     origin: AirportCode,
     destination: AirportCode,
-    departure: NaiveDateTime,
-    arrival: NaiveDateTime,
+    departure: DateTime<Utc>,
+    arrival: DateTime<Utc>,
     block_time: Duration,
 }
 
 impl Flight {
     pub fn new(
         company: String,
+        flt_id: String,
         origin: AirportCode,
         destination: AirportCode,
-        departure: NaiveDateTime,
-        arrival: NaiveDateTime,
+        departure: DateTime<Utc>,
+        arrival: DateTime<Utc>,
         block_time: Duration,
     ) -> Self {
         Self {
             company,
+            flight_id: flt_id,
             origin,
             destination,
             departure,
@@ -31,32 +34,19 @@ impl Flight {
         }
     }
 
-    pub fn dep_utc<R: TimeResolver>(&self, r: &R) -> DateTime<Utc> {
-        let tz = r.airport_timezone(&self.origin);
-        tz.from_local_datetime(&self.departure)
-            .single()
-            .expect("invalid local departure time")
-            .with_timezone(&Utc)
+    pub fn flight_id(&self) -> &String{
+        &self.flight_id
     }
-
-    pub fn arr_utc<R: TimeResolver>(&self, r: &R) -> DateTime<Utc> {
-        let tz = r.airport_timezone(&self.destination);
-        tz.from_local_datetime(&self.arrival)
-            .single()
-            .expect("invalid local arrival time")
-            .with_timezone(&Utc)
-    }
-
     pub fn origin(&self) -> &AirportCode{
         &self.origin
     }
     pub fn destination(&self) -> &AirportCode{
         &self.destination
     }
-    pub fn dep_local(&self) -> &NaiveDateTime{
+    pub fn dep_utc(&self) -> &DateTime<Utc>{
         &self.departure
     }
-    pub fn arr_local(&self) -> &NaiveDateTime{
+    pub fn arr_utc(&self) -> &DateTime<Utc>{
         &self.arrival
     }
     pub fn block_time(&self) -> &Duration{
