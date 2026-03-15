@@ -62,3 +62,6 @@ pub async fn add_route(db: &Surreal<Any>, plan: &FlightPlan) -> surrealdb::Resul
     Ok(())
 }
 
+pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightRow> {
+    db.select::<Vec<FlightRow>>("flight").await.unwrap_or(vec![])
+}

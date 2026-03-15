@@ -10,6 +10,7 @@ pub struct Segment {
     pub companies: Vec<String>,
     pub flights: Vec<String>,
     pub distance: f64,
+    pub mct: i64,
 }
 
 #[derive(Debug, Deserialize,SurrealValue)]
@@ -29,49 +30,57 @@ pub async fn find_paths(
 ) -> surrealdb::Result<Vec<PathResult>> {
     let query = format!(
         r#"
-        LET $dep = airport:{dep};
-        LET $arr = airport:{arr};
-        LET $dep_loc = (SELECT location FROM $dep)[0].location;
-        LET $arr_loc = (SELECT location FROM $arr)[0].location;
-        LET $direct_dist = fn::haversine($dep_loc, $arr_loc);
-        LET $paths = $dep.{{..{max_hops}+path+inclusive}}->route->airport;
-        LET $filtered = array::filter($paths, |$p|
-            array::last($p) = $arr
-            AND array::len($p) = array::len(array::distinct($p))
-        );
-        RETURN array::filter(
-            array::map($filtered, |$path| {{
-                LET $segments = array::map(array::windows($path, 2), |$pair| {{
-                    LET $rid = type::record('route', string::concat(
-                        string::split(<string>$pair[0], ':')[1], '_',
-                        string::split(<string>$pair[1], ':')[1]
-                    ));
-                    LET $loc_a = (SELECT location FROM $pair[0])[0].location;
-                    LET $loc_b = (SELECT location FROM $pair[1])[0].location;
-                    LET $route_info = (SELECT companies, flights FROM $rid)[0];
-                    RETURN {{
-                        from: $pair[0],
-                        to: $pair[1],
-                        companies: $route_info.companies,
-                        flights: $route_info.flights,
-                        distance: fn::haversine($loc_a, $loc_b)
-                    }};
-                }});
-                LET $total_dist = math::sum(array::map($segments, |$s| $s.distance));
+    LET $dep = airport:{dep};
+    LET $arr = airport:{arr};
+    LET $dep_loc = (SELECT location FROM $dep)[0].location;
+    LET $arr_loc = (SELECT location FROM $arr)[0].location;
+    LET $direct_dist = geo::distance($dep_loc, $arr_loc);
+
+    LET $paths = array::flatten([
+        {hop_queries}
+    ]);
+
+    LET $filtered = array::filter($paths, |$p|
+        array::last($p) = $arr
+        AND array::len($p) = array::len(array::distinct($p))
+    );
+    RETURN array::filter(
+        array::map($filtered, |$path| {{
+            LET $segments = array::map(array::windows($path, 2), |$pair| {{
+                LET $rid = type::record('route', string::concat(
+                    string::split(<string>$pair[0], ':')[1], '_',
+                    string::split(<string>$pair[1], ':')[1]
+                ));
+                LET $loc_a = (SELECT location FROM $pair[0])[0];
+                LET $loc_b = (SELECT location FROM $pair[1])[0];
+                LET $route_info = (SELECT companies, flights FROM $rid)[0];
                 RETURN {{
-                    airports: $path,
-                    segments: $segments,
-                    total_dist: $total_dist,
-                    circuity: $total_dist / $direct_dist
+                    from: $pair[0],
+                    to: $pair[1],
+                    companies: $route_info.companies,
+                    flights: $route_info.flights,
+                    distance: geo::distance($loc_a.location, $loc_b.location),
+                    mct: loc_b.mct
                 }};
-            }}),
-            |$r| $r.circuity <= {max_circuity}
-        );
-        "#,
+            }});
+            LET $total_dist = math::sum(array::map($segments, |$s| $s.distance));
+            RETURN {{
+                airports: $path,
+                segments: $segments,
+                total_dist: $total_dist,
+                circuity: $total_dist / $direct_dist
+            }};
+        }}),
+        |$r| $r.circuity <= {max_circuity}
+    );
+    "#,
         dep = dep,
         arr = arr,
-        max_hops = max_hops,
         max_circuity = max_circuity,
+        hop_queries = (1..=max_hops)
+            .map(|n| format!("$dep.{{..{}+path+inclusive}}->route->airport", n))
+            .collect::<Vec<_>>()
+            .join(",\n        "),
     );
 
     let mut result = db.query(&query).await?;

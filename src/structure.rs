@@ -1,35 +1,5 @@
-use actix_multipart::form::tempfile::TempFile;
-use actix_multipart::form::MultipartForm;
 use serde::Deserialize;
-use surrealdb::{Surreal, engine::any};
 
-pub struct WebData {
-    database: Surreal<any::Any>,
-}
-
-impl WebData {
-    pub fn new(data_base: Surreal<any::Any>) -> Self {
-        WebData {
-            database: data_base,
-        }
-    }
-
-    pub fn database(&self) -> &Surreal<any::Any> {
-        &self.database
-    }
-}
-
-
-#[derive(MultipartForm)]
-pub struct SSIM {
-    file: TempFile,
-}
-
-impl SSIM {
-    pub fn file(&mut self) -> &mut TempFile {
-        &mut self.file
-    }
-}
 
 #[derive(Deserialize, Clone)]
 pub struct DataBase {

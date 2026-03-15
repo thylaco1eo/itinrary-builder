@@ -1,7 +1,7 @@
 use actix_web::{get, web, HttpResponse};
 use log::error;
 use serde_json::json;
-use crate::structure::WebData;
+use crate::memory::core::WebData;
 
 #[get("/api/healthcheck")]
 pub async fn health_check(data: web::Data<WebData>) -> Result<HttpResponse, actix_web::Error> {

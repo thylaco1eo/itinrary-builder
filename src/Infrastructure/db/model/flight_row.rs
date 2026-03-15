@@ -70,7 +70,6 @@ impl FlightRow {
             flight_num: flight_plan.flight_no.clone(),
             origin_code: flight_plan.origin.as_str().to_string(),
             destination_code: flight_plan.destination.as_str().to_string(),
-            //dep_local: date.and_hms_opt(flight_plan.dep_time.hour(), flight_plan.dep_time.minute(), 0).unwrap(),
             dep_local: dep_offset.from_local_datetime(&date.and_time(flight_plan.dep_time)).single().map(|dt| dt.to_utc()).unwrap(),
             arr_local: arr_offset.from_local_datetime(&date.and_time(flight_plan.arr_time)).single().map(|dt| dt.to_utc()).unwrap(),
             block_time_minutes: flight_plan.block_time.num_minutes() as u32,

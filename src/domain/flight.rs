@@ -55,6 +55,33 @@ impl Flight {
     pub fn company(&self) -> &str{ &self.company }
 }
 
-pub trait TimeResolver {
-    fn airport_timezone(&self, code: &AirportCode) -> Tz;
+pub struct Flightcore{
+    company: String,
+    flight_id: String,
+    origin: AirportCode,
+    destination: AirportCode,
+    departure: DateTime<Tz>,
+    arrival: DateTime<Tz>,
+    block_time: u32,
+}
+
+impl Flightcore {
+    pub fn new(company: String,
+               flt_id: String,
+               origin: AirportCode,
+               destination: AirportCode,
+               departure: DateTime<Tz>,
+               arrival: DateTime<Tz>,
+               block_time: u32
+    ) -> Self {
+        Self {
+            company,
+            flight_id: flt_id,
+            origin,
+            destination,
+            departure,
+            arrival,
+            block_time,
+        }
+    }
 }

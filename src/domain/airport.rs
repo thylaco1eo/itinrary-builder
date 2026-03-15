@@ -88,16 +88,9 @@ impl Airport {
         self.timezone
     }
     pub fn latitude(&self) -> f64 { self.location.0.y }
-    pub fn longitude(&self) -> f64 { self.location.0.x}
+    pub fn longitude(&self) -> f64 { self.location.0.x }
     pub fn minimum_connection_time(&self) -> u32 {
         self.minimum_connection_time
     }
 }
-
-impl PartialEq for Airport {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-impl Eq for Airport {}
 

@@ -16,8 +16,8 @@ pub async fn add_airport(db: &Surreal<Any>, airport: AirportRow) -> surrealdb::R
         return Ok(false);
     }
     
-    // Use raw query to ensure correct insertion if high-level API fails
-    let point = Geometry::Point(Point::new(airport.longitude as f64, airport.latitude as f64));
+    // Use raw query to ensure the correct insertion if high-level API fails
+    let point = Geometry::Point(Point::new(airport.longitude, airport.latitude));
 
     let _response = db.query("CREATE type::record('airport',$id) SET code = $code, timezone = $timezone, name = $name, city = $city, country = $country, location = $location, mct = $mct")
         .bind(("id", id))
@@ -31,4 +31,8 @@ pub async fn add_airport(db: &Surreal<Any>, airport: AirportRow) -> surrealdb::R
         .await?;
         
     Ok(true)
+}
+
+pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
+    db.select("airport").await.unwrap_or(vec![])
 }

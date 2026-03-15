@@ -1,6 +1,6 @@
 use actix_web::{put, web, HttpResponse};
 use std::time::Instant;
-use crate::structure::WebData;
+use crate::memory::core::WebData;
 use actix_multipart::{
     form::{
         MultipartForm,

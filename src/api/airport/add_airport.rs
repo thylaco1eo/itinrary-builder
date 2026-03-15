@@ -2,7 +2,7 @@ use actix_web::{put, web, HttpResponse};
 use serde_json::json;
 use crate::Infrastructure::db;
 use crate::Infrastructure::db::model::airport_row::AirportRow;
-use crate::structure::WebData;
+use crate::memory::core::WebData;
 
 use crate::domain::airport::Airport;
 use crate::Infrastructure::db::model::airport_row::AirportRowError;
