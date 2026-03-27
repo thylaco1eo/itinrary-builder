@@ -21,8 +21,8 @@ impl AirportCode {
     }
 }
 
-#[derive(Clone,Debug)]
-pub struct Airport{
+#[derive(Clone, Debug)]
+pub struct Airport {
     id: AirportCode,
     name: Option<String>,
     city: Option<String>,
@@ -33,12 +33,7 @@ pub struct Airport{
 }
 
 impl Airport {
-    pub fn new_minimal(
-        id: AirportCode,
-        timezone: Tz,
-        longitude: f64,
-        latitude: f64,
-    ) -> Self {
+    pub fn new_minimal(id: AirportCode, timezone: Tz, longitude: f64, latitude: f64) -> Self {
         Self {
             id,
             timezone,
@@ -87,10 +82,13 @@ impl Airport {
     pub fn timezone(&self) -> Tz {
         self.timezone
     }
-    pub fn latitude(&self) -> f64 { self.location.0.y }
-    pub fn longitude(&self) -> f64 { self.location.0.x }
+    pub fn latitude(&self) -> f64 {
+        self.location.0.y
+    }
+    pub fn longitude(&self) -> f64 {
+        self.location.0.x
+    }
     pub fn minimum_connection_time(&self) -> u32 {
         self.minimum_connection_time
     }
 }
-

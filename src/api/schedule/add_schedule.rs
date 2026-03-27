@@ -1,16 +1,11 @@
+use crate::domain::flightplan;
+use crate::domain::flightplan::FlightPlan;
+use crate::memory::core::WebData;
+use crate::Infrastructure::db::repository::flight_repo;
+use crate::Infrastructure::file_loader::ssim_loader::{OagStreamIterator, ParseItem};
+use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::{put, web, HttpResponse};
 use std::time::Instant;
-use crate::memory::core::WebData;
-use actix_multipart::{
-    form::{
-        MultipartForm,
-        tempfile::TempFile,
-    },
-};
-use crate::Infrastructure::file_loader::ssim_loader::{OagStreamIterator, ParseItem};
-use crate::domain::flightplan;
-use crate::Infrastructure::db::repository::flight_repo;
-use crate::domain::flightplan::FlightPlan;
 
 #[derive(Debug, MultipartForm)]
 struct UploadForm {
@@ -18,9 +13,11 @@ struct UploadForm {
     file: TempFile,
 }
 
-
 #[put("/schedule")]
-pub async fn add_schedule(data: web::Data<WebData>,MultipartForm(form): MultipartForm<UploadForm>) -> Result<HttpResponse, actix_web::Error> {
+pub async fn add_schedule(
+    data: web::Data<WebData>,
+    MultipartForm(form): MultipartForm<UploadForm>,
+) -> Result<HttpResponse, actix_web::Error> {
     let file = form.file.file.into_file();
     let iterator = OagStreamIterator::new(file);
 
@@ -45,12 +42,7 @@ pub async fn add_schedule(data: web::Data<WebData>,MultipartForm(form): Multipar
                 build_duration += start_build.elapsed();
 
                 let start_add_flight = Instant::now();
-                match flight_repo::add_flights_batch(
-                    data.database(),
-                    expanded_flights
-                )
-                .await
-                {
+                match flight_repo::add_flights_batch(data.database(), expanded_flights).await {
                     Ok(_) => (),
                     Err(e) => {
                         let msg = format!("❌ Error adding flights to DB: {}", e);
@@ -64,28 +56,36 @@ pub async fn add_schedule(data: web::Data<WebData>,MultipartForm(form): Multipar
                 add_flight_duration += start_add_flight.elapsed();
 
                 let start_add_route = Instant::now();
-                match flight_repo::add_route(data.database(),&plan).await {
-                    Ok(_) =>(),
-                    Err(e) => {eprintln!("❌ Error adding route to DB: {}", e);}
+                match flight_repo::add_route(data.database(), &plan).await {
+                    Ok(_) => (),
+                    Err(e) => {
+                        eprintln!("❌ Error adding route to DB: {}", e);
+                    }
                 }
                 add_route_duration += start_add_route.elapsed();
 
                 if flight_count % 10000 == 0 {
                     println!("Processed {} flights...", flight_count);
                 }
-            },
+            }
             ParseItem::Trailer(t) => {
-                println!("✅ Finished block with serial check: {}", t.check_serial_number);
-            },
+                println!(
+                    "✅ Finished block with serial check: {}",
+                    t.check_serial_number
+                );
+            }
             ParseItem::Error(e) => {
                 eprintln!("❌ Error parsing file: {}", e);
                 // 根据需求决定是 break 还是 continue
-            },
+            }
             _ => {} // 忽略 Header/Season
         }
     }
 
-    println!("Total: {} flights with {} segments.", flight_count, segment_count);
+    println!(
+        "Total: {} flights with {} segments.",
+        flight_count, segment_count
+    );
     println!("⏱️ Build flightplan: {:?}", build_duration);
     println!("⏱️ DB add_flight: {:?}", add_flight_duration);
     println!("⏱️ DB add_route: {:?}", add_route_duration);

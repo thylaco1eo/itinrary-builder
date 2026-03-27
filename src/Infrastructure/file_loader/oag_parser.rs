@@ -1,7 +1,7 @@
+use crate::Infrastructure::file_loader::dei::Dei;
+use anyhow::{anyhow, Result};
 use chrono::{NaiveDate, NaiveTime};
 use std::str::FromStr;
-use anyhow::{anyhow, Result};
-use crate::Infrastructure::file_loader::dei::Dei;
 // --- Enums & Helper Types ---
 
 #[derive(Debug, PartialEq)]
@@ -38,40 +38,40 @@ pub struct SeasonRecord {
     pub record_serial_number: u32,
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct FlightLegRecord {
     // Identity
-    pub airline_designator: String,   // Bytes 3-5
-    pub flight_number: String,        // Bytes 6-9
-    pub itinerary_variation: u8,      // Bytes 10-11
-    pub leg_sequence: u8,             // Bytes 12-13
-    pub service_type: String,         // Byte 14
+    pub airline_designator: String, // Bytes 3-5
+    pub flight_number: String,      // Bytes 6-9
+    pub itinerary_variation: u8,    // Bytes 10-11
+    pub leg_sequence: u8,           // Bytes 12-13
+    pub service_type: String,       // Byte 14
 
     // Period
-    pub valid_from: NaiveDate,        // Bytes 15-21
-    pub valid_to: NaiveDate,          // Bytes 22-28
-    pub days_of_operation: String,    // Bytes 29-35 (e.g. "1234567")
+    pub valid_from: NaiveDate,     // Bytes 15-21
+    pub valid_to: NaiveDate,       // Bytes 22-28
+    pub days_of_operation: String, // Bytes 29-35 (e.g. "1234567")
 
     // Route & Times
-    pub departure_station: String,    // Bytes 37-39
-    pub pax_std: NaiveTime,           // Bytes 40-43
-    pub aircraft_std: NaiveTime,      // Bytes 44-47
-    pub time_var_dep: String,         // Bytes 48-52 (UTC Offset)
+    pub departure_station: String, // Bytes 37-39
+    pub pax_std: NaiveTime,        // Bytes 40-43
+    pub aircraft_std: NaiveTime,   // Bytes 44-47
+    pub time_var_dep: String,      // Bytes 48-52 (UTC Offset)
 
-    pub arrival_station: String,      // Bytes 55-57
-    pub aircraft_sta: NaiveTime,      // Bytes 58-61
-    pub pax_sta: NaiveTime,           // Bytes 62-65
-    pub time_var_arr: String,         // Bytes 66-70 (UTC Offset)
+    pub arrival_station: String, // Bytes 55-57
+    pub aircraft_sta: NaiveTime, // Bytes 58-61
+    pub pax_sta: NaiveTime,      // Bytes 62-65
+    pub time_var_arr: String,    // Bytes 66-70 (UTC Offset)
 
     // Details
-    pub aircraft_type: String,        // Bytes 73-75
+    pub aircraft_type: String,           // Bytes 73-75
     pub aircraft_config: Option<String>, // Bytes 173-192 OR 76-95 (Simplified logic)
 
     // Date Variations (0-9, J)
-    pub dep_date_var: char,           // Byte 193
-    pub arr_date_var: char,           // Byte 194
+    pub dep_date_var: char, // Byte 193
+    pub arr_date_var: char, // Byte 194
 
-    pub record_serial_number: u32,    // Bytes 195-200
+    pub record_serial_number: u32, // Bytes 195-200
 }
 
 #[derive(Debug, Clone)]
@@ -86,8 +86,8 @@ pub struct SegmentDataRecord {
 #[derive(Debug)]
 pub struct TrailerRecord {
     pub airline_designator: String,
-    pub check_serial_number: u32,     // Bytes 188-193 (Should match prev record)
-    pub continuation_code: char,      // Byte 194 (C or E)
+    pub check_serial_number: u32, // Bytes 188-193 (Should match prev record)
+    pub continuation_code: char,  // Byte 194 (C or E)
     pub record_serial_number: u32,
 }
 
@@ -101,7 +101,6 @@ pub enum OagRecord {
     Trailer(TrailerRecord),
     Unknown(u8, String),
 }
-
 
 // --- Parsing Logic ---
 
@@ -132,33 +131,34 @@ impl OagParser {
 
     // Helper: Parse u8/u32 safely
     fn parse_num<T: FromStr>(line: &str, start: usize, end: usize) -> Result<T>
-    where T::Err: std::fmt::Display {
+    where
+        T::Err: std::fmt::Display,
+    {
         let s = Self::parse_str(line, start, end)?;
-        s.parse::<T>().map_err(|e| anyhow!("Number parse error '{}': {}", s, e))
+        s.parse::<T>()
+            .map_err(|e| anyhow!("Number parse error '{}': {}", s, e))
     }
 
     pub fn parse_line(line: &str) -> Result<OagRecord> {
         let clean_line = line.trim_end();
-        if clean_line.is_empty() { return Err(anyhow!("Empty line")); }
+        if clean_line.is_empty() {
+            return Err(anyhow!("Empty line"));
+        }
 
         let record_type_char = clean_line.chars().next().unwrap();
 
         match record_type_char {
-            '1' => {
-                Ok(OagRecord::Header(HeaderRecord {
-                    title: Self::parse_str(clean_line, 2, 35)?,
-                    record_serial_number: Self::parse_num(clean_line, 195, 200)?,
-                }))
-            }
-            '2' => {
-                Ok(OagRecord::Season(SeasonRecord {
-                    time_mode: Self::parse_str(clean_line, 2, 2)?.parse()?,
-                    airline_designator: Self::parse_str(clean_line, 3, 5)?,
-                    valid_from: Self::parse_date(clean_line, 15, 21)?,
-                    valid_to: Self::parse_date(clean_line, 22, 28)?,
-                    record_serial_number: Self::parse_num(clean_line, 195, 200)?,
-                }))
-            }
+            '1' => Ok(OagRecord::Header(HeaderRecord {
+                title: Self::parse_str(clean_line, 2, 35)?,
+                record_serial_number: Self::parse_num(clean_line, 195, 200)?,
+            })),
+            '2' => Ok(OagRecord::Season(SeasonRecord {
+                time_mode: Self::parse_str(clean_line, 2, 2)?.parse()?,
+                airline_designator: Self::parse_str(clean_line, 3, 5)?,
+                valid_from: Self::parse_date(clean_line, 15, 21)?,
+                valid_to: Self::parse_date(clean_line, 22, 28)?,
+                record_serial_number: Self::parse_num(clean_line, 195, 200)?,
+            })),
             '3' => {
                 Ok(OagRecord::FlightLeg(FlightLegRecord {
                     airline_designator: Self::parse_str(clean_line, 3, 5)?,
@@ -182,37 +182,46 @@ impl OagParser {
                     // 这里简化处理，只读 Config Area
                     aircraft_config: {
                         let s = Self::parse_str(clean_line, 173, 192)?;
-                        if s.is_empty() { None } else { Some(s) }
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s)
+                        }
                     },
-                    dep_date_var: Self::parse_str(clean_line, 193, 193)?.chars().next().unwrap_or('0'),
-                    arr_date_var: Self::parse_str(clean_line, 194, 194)?.chars().next().unwrap_or('0'),
+                    dep_date_var: Self::parse_str(clean_line, 193, 193)?
+                        .chars()
+                        .next()
+                        .unwrap_or('0'),
+                    arr_date_var: Self::parse_str(clean_line, 194, 194)?
+                        .chars()
+                        .next()
+                        .unwrap_or('0'),
                     record_serial_number: Self::parse_num(clean_line, 195, 200)?,
                 }))
             }
             '4' => {
-                let dei_enum = Dei::from_code(Self::parse_str(clean_line,31,33)?.as_str());
-                Ok(OagRecord::SegmentData(SegmentDataRecord{
-                    raw_dei: Self::parse_str(clean_line,31,33)?,
+                let dei_enum = Dei::from_code(Self::parse_str(clean_line, 31, 33)?.as_str());
+                Ok(OagRecord::SegmentData(SegmentDataRecord {
+                    raw_dei: Self::parse_str(clean_line, 31, 33)?,
                     dei: dei_enum,
                     board_point: Self::parse_str(clean_line, 34, 36)?,
                     off_point: Self::parse_str(line, 37, 39)?,
                     data: Self::parse_str(line, 40, 194)?,
                 }))
             }
-            '5' => {
-                Ok(OagRecord::Trailer(TrailerRecord {
-                    airline_designator: Self::parse_str(clean_line, 3, 5)?,
-                    check_serial_number: Self::parse_num(clean_line, 188, 193)?,
-                    continuation_code: Self::parse_str(clean_line, 194, 194)?.chars().next().unwrap_or('E'),
-                    record_serial_number: Self::parse_num(clean_line, 195, 200)?,
-                }))
-            }
-            _ => {
-                Ok(OagRecord::Unknown(
-                    record_type_char.to_digit(10).unwrap_or(0) as u8,
-                    clean_line.to_string()
-                ))
-            }
+            '5' => Ok(OagRecord::Trailer(TrailerRecord {
+                airline_designator: Self::parse_str(clean_line, 3, 5)?,
+                check_serial_number: Self::parse_num(clean_line, 188, 193)?,
+                continuation_code: Self::parse_str(clean_line, 194, 194)?
+                    .chars()
+                    .next()
+                    .unwrap_or('E'),
+                record_serial_number: Self::parse_num(clean_line, 195, 200)?,
+            })),
+            _ => Ok(OagRecord::Unknown(
+                record_type_char.to_digit(10).unwrap_or(0) as u8,
+                clean_line.to_string(),
+            )),
         }
     }
 }

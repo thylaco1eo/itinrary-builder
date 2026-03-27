@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use surrealdb::types::{SurrealValue,RecordId};
+use surrealdb::types::{RecordId, SurrealValue};
 
-#[derive(Serialize,Deserialize,Clone,SurrealValue)]
+#[derive(Serialize, Deserialize, Clone, SurrealValue)]
 pub struct Route {
     #[surreal(rename = "in")]
     dep_station: RecordId,
@@ -13,8 +13,20 @@ pub struct Route {
 }
 
 impl Route {
-    pub fn new(dep_station: RecordId,arr_station:RecordId,id: RecordId, flights: Vec<String>,companies: Vec<String>) -> Self {
-        Self { dep_station,arr_station, id, flights, companies}
+    pub fn new(
+        dep_station: RecordId,
+        arr_station: RecordId,
+        id: RecordId,
+        flights: Vec<String>,
+        companies: Vec<String>,
+    ) -> Self {
+        Self {
+            dep_station,
+            arr_station,
+            id,
+            flights,
+            companies,
+        }
     }
     pub fn flights(&self) -> &[String] {
         &self.flights

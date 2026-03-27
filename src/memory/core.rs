@@ -1,20 +1,21 @@
-use std::collections::HashMap;
-use surrealdb::{Surreal, engine::any};
-use surrealdb_types::{ToSql};
 use crate::domain::airport::{Airport, AirportCode};
-use crate::Infrastructure::db::model::flight_row::FlightRow;
-use crate::Infrastructure::db::repository::flight_repo::get_flights;
-use crate::Infrastructure::db::repository::airport_repo::get_all_airports;
 use crate::domain::flight::Flightcore;
+use crate::Infrastructure::db::model::flight_row::FlightRow;
+use crate::Infrastructure::db::repository::airport_repo::get_all_airports;
+use crate::Infrastructure::db::repository::flight_repo::get_flights;
+use std::collections::HashMap;
+use surrealdb::{engine::any, Surreal};
+use surrealdb_types::ToSql;
 
 pub struct WebData {
     database: Surreal<any::Any>,
     flights: HashMap<String, Flightcore>,
-    airports: HashMap<String, Airport>
+    airports: HashMap<String, Airport>,
 }
 
 impl WebData {
     pub async fn new(data_base: Surreal<any::Any>) -> Self {
+        println!("Loading airports into memory...");
         let mut flights = HashMap::new();
         let mut airports = HashMap::new();
 
@@ -28,18 +29,21 @@ impl WebData {
                 Err(_) => {}
             }
         }
+        println!("Loaded {} airports into memory.", airports.len());
 
+        println!("Loading flights into memory...");
         let flight_rows: Vec<FlightRow> = get_flights(&data_base).await;
         for row in flight_rows {
             if let Some(e) = try_from(row.clone(), &airports) {
                 flights.insert(row.id.key.to_sql(), e);
             }
         }
+        println!("Loaded {} flights into memory.", flights.len());
 
         WebData {
             database: data_base,
             flights,
-            airports
+            airports,
         }
     }
 
@@ -56,8 +60,8 @@ impl WebData {
     }
 }
 
-fn try_from(row: FlightRow,airports:&HashMap<String,Airport>) -> Option<Flightcore> {
-    if !airports.contains_key(&row.origin_code) || !airports.contains_key(&row.destination_code){
+fn try_from(row: FlightRow, airports: &HashMap<String, Airport>) -> Option<Flightcore> {
+    if !airports.contains_key(&row.origin_code) || !airports.contains_key(&row.destination_code) {
         return None;
     }
     let origin_tz = airports.get(&row.origin_code).unwrap().timezone();
@@ -69,7 +73,7 @@ fn try_from(row: FlightRow,airports:&HashMap<String,Airport>) -> Option<Flightco
         AirportCode::new(row.destination_code).unwrap(),
         row.dep_local.with_timezone(&origin_tz),
         row.arr_local.with_timezone(&destination_tz),
-        row.block_time_minutes
+        row.block_time_minutes,
     );
     Some(flight)
 }

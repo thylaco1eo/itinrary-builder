@@ -1,8 +1,9 @@
+use crate::domain::airport::{Airport, AirportCode, AirportCodeError};
 use serde::{Deserialize, Serialize};
-use crate::domain::airport::{Airport, AirportCode,AirportCodeError};
 use surrealdb::types::{Kind, SurrealValue, Value};
+use surrealdb_types::Geometry;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, SurrealValue)]
 #[serde(transparent)]
 pub struct AirportCodeRow {
     pub code: String,
@@ -15,18 +16,28 @@ impl TryFrom<AirportCodeRow> for AirportCode {
     }
 }
 
-#[derive(Serialize,Deserialize,Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AirportRow {
     pub code: AirportCodeRow,
     pub timezone: String,
     pub name: Option<String>,
     pub city: Option<String>,
     pub country: Option<String>,
-    pub latitude:f64,
-    pub longitude:f64,
+    pub latitude: f64,
+    pub longitude: f64,
     pub mct: Option<u32>,
 }
 
+#[derive(Serialize, Deserialize, Clone, SurrealValue)]
+pub struct AirportStoredRow {
+    pub code: String,
+    pub timezone: String,
+    pub name: Option<String>,
+    pub city: Option<String>,
+    pub country: Option<String>,
+    pub location: Geometry,
+    pub mct: Option<u32>,
+}
 
 #[derive(Debug)]
 pub enum AirportRowError {
@@ -34,7 +45,7 @@ pub enum AirportRowError {
     InvalidTimezone(chrono_tz::ParseError),
     InvalidLatitude,
     InvalidLongitude,
-    InvalidLocationType
+    InvalidLocationType,
 }
 
 impl From<AirportCodeError> for AirportRowError {
@@ -49,12 +60,10 @@ impl From<chrono_tz::ParseError> for AirportRowError {
     }
 }
 
-
 impl TryFrom<AirportRow> for Airport {
     type Error = AirportRowError;
 
     fn try_from(row: AirportRow) -> Result<Self, Self::Error> {
-
         if row.latitude < -90.0 || row.latitude > 90.0 {
             return Err(AirportRowError::InvalidLatitude);
         }
@@ -70,8 +79,29 @@ impl TryFrom<AirportRow> for Airport {
             row.country,
             row.latitude,
             row.longitude,
-            row.mct
+            row.mct,
         ))
+    }
+}
+
+impl TryFrom<AirportStoredRow> for AirportRow {
+    type Error = AirportRowError;
+
+    fn try_from(row: AirportStoredRow) -> Result<Self, Self::Error> {
+        let Geometry::Point(point) = row.location else {
+            return Err(AirportRowError::InvalidLocationType);
+        };
+
+        Ok(Self {
+            code: AirportCodeRow { code: row.code },
+            timezone: row.timezone,
+            name: row.name,
+            city: row.city,
+            country: row.country,
+            latitude: point.y(),
+            longitude: point.x(),
+            mct: row.mct,
+        })
     }
 }
 
@@ -87,7 +117,11 @@ impl SurrealValue for AirportRow {
     fn into_value(self) -> Value {
         match serde_json::to_value(self) {
             Ok(v) => match v {
-                serde_json::Value::Object(o) => Value::Object(o.into_iter().map(|(k, v)| (k, serde_json::from_value(v).unwrap_or(Value::None))).collect()),
+                serde_json::Value::Object(o) => Value::Object(
+                    o.into_iter()
+                        .map(|(k, v)| (k, serde_json::from_value(v).unwrap_or(Value::None)))
+                        .collect(),
+                ),
                 _ => Value::None,
             },
             Err(_) => Value::None,

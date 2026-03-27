@@ -1,12 +1,11 @@
-pub mod services;
-pub mod domain;
-pub mod structure;
-mod api;
 mod Infrastructure;
+mod api;
+pub mod domain;
+pub mod services;
+pub mod structure;
 //mod config;
 mod memory;
 
-use memory::core::WebData;
 use actix_web::middleware::Logger;
 use actix_web::{web, App, HttpServer};
 use log4rs::{
@@ -14,13 +13,14 @@ use log4rs::{
     config::{Appender, Root},
     encode::pattern::PatternEncoder,
 };
+use memory::core::WebData;
 use std::fs::File;
 use std::io::prelude::*;
 use structure::*;
 use surrealdb::engine::any::connect;
 use surrealdb::opt::auth::Root as DBRoot;
 use Infrastructure::db;
-use Infrastructure::db::repository::flight_repo::get_flights;
+//use Infrastructure::db::repository::flight_repo::get_flights;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -44,21 +44,59 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to build Log config");
     let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
 
-    let database = connect(format!("ws://{}:{}",config.database().host(),config.database().port())).await.expect("Failed to connect to SurrealDB");
-    database.signin(DBRoot {
-        username: config.database().username().to_string(),
-        password: config.database().password().to_string(),
-    }).await.expect("Failed to authenticate to SurrealDB");
+    println!(
+        "Connecting to SurrealDB at ws://{}:{}...",
+        config.database().host(),
+        config.database().port()
+    );
+    let database = connect(format!(
+        "ws://{}:{}",
+        config.database().host(),
+        config.database().port()
+    ))
+    .await
+    .expect("Failed to connect to SurrealDB");
+    println!("Connected to SurrealDB.");
+    database
+        .signin(DBRoot {
+            username: config.database().username().to_string(),
+            password: config.database().password().to_string(),
+        })
+        .await
+        .expect("Failed to authenticate to SurrealDB");
+    println!("Authenticated to SurrealDB.");
 
-    db::surrealDB::connection::check_db_status(&database, config.database().namespace(), config.database().dbname()).await;
-    database.use_ns(config.database().namespace()).use_db(config.database().dbname()).await.expect("Failed to select namespace and database");
-    let app_state:web::Data<WebData> = web::Data::new(WebData::new(database.clone()).await);
+    db::surrealDB::connection::check_db_status(
+        &database,
+        config.database().namespace(),
+        config.database().dbname(),
+    )
+    .await;
+    println!(
+        "Selecting namespace '{}' and database '{}'...",
+        config.database().namespace(),
+        config.database().dbname()
+    );
+    database
+        .use_ns(config.database().namespace())
+        .use_db(config.database().dbname())
+        .await
+        .expect("Failed to select namespace and database");
+    println!("Selected namespace and database.");
+    let app_state: web::Data<WebData> = web::Data::new(WebData::new(database.clone()).await);
+    println!(
+        "Startup complete. {} airports and {} flights are ready in memory.",
+        app_state.airports().len(),
+        app_state.flights().len()
+    );
+    println!("HTTP server listening on http://127.0.0.1:8080");
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
             .service(api::schedule::add_schedule::add_schedule)
             .service(api::utils::health_check::health_check)
-            .service(api::airport::add_airport::add_airport)
+            .service(api::airport::add_airport)
+            .service(api::ib::get_ib)
             .wrap(Logger::default())
     })
     .bind(("127.0.0.1", 8080))?

@@ -1,5 +1,5 @@
-use std::io::{BufRead, BufReader};
 use crate::Infrastructure::file_loader::oag_parser::*;
+use std::io::{BufRead, BufReader};
 
 #[derive(Debug)]
 pub struct FlightBlock {
@@ -87,7 +87,9 @@ impl<R: std::io::Read> Iterator for OagStreamIterator<R> {
                         continue;
                     };
 
-                    if result.is_some() { return result; }
+                    if result.is_some() {
+                        return result;
+                    }
                 }
 
                 // --- Case B: 遇到 Type 4 (子记录) ---
@@ -99,7 +101,9 @@ impl<R: std::io::Read> Iterator for OagStreamIterator<R> {
                         block.segments.push(seg_record);
                     } else {
                         // 错误情况：出现了 Type 4 但前面没有 Type 3
-                        return Some(ParseItem::Error(anyhow::anyhow!("Orphan Type 4 record found")));
+                        return Some(ParseItem::Error(anyhow::anyhow!(
+                            "Orphan Type 4 record found"
+                        )));
                     }
                     // Type 4 消耗掉了，继续读下一行
                     continue;

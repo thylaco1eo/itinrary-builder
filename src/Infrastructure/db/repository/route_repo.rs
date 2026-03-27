@@ -1,9 +1,9 @@
+use serde::Deserialize;
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
-use surrealdb_types::{RecordId,SurrealValue};
-use serde::Deserialize;
+use surrealdb_types::{RecordId, SurrealValue};
 
-#[derive(Debug, Deserialize,SurrealValue)]
+#[derive(Debug, Deserialize, SurrealValue)]
 pub struct Segment {
     pub from: RecordId,
     pub to: RecordId,
@@ -13,7 +13,7 @@ pub struct Segment {
     pub mct: i64,
 }
 
-#[derive(Debug, Deserialize,SurrealValue)]
+#[derive(Debug, Deserialize, SurrealValue)]
 pub struct PathResult {
     pub airports: Vec<RecordId>,
     pub segments: Vec<Segment>,
@@ -89,5 +89,3 @@ pub async fn find_paths(
     let paths: Vec<PathResult> = result.take(7)?;
     Ok(paths)
 }
-
-

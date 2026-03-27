@@ -3,6 +3,9 @@ name = "itinbuilder"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+opt-level = 3
+
 [dependencies]
 chrono = "0.4.41"
 serde = { version = "1.0.210", features = ["derive"] }

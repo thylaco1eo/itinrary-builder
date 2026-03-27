@@ -1,9 +1,9 @@
-use chrono::Datelike;
-use chrono::{NaiveDate, NaiveTime,Duration};
 use crate::domain::airport::AirportCode;
-use crate::Infrastructure::db::model::flight_row::FlightRow;
 use crate::domain::time::compute_block_time;
+use crate::Infrastructure::db::model::flight_row::FlightRow;
 use crate::Infrastructure::file_loader::oag_parser::FlightLegRecord;
+use chrono::Datelike;
+use chrono::{Duration, NaiveDate, NaiveTime};
 
 pub struct FlightPlan {
     pub company: String,
@@ -19,7 +19,6 @@ pub struct FlightPlan {
     pub dep_tz: String,
     pub arr_tz: String,
 }
-
 
 pub fn parse_line(line: &str) -> Option<FlightPlan> {
     if !line.starts_with('3') {
@@ -60,8 +59,8 @@ impl TryFrom<FlightLegRecord> for FlightPlan {
         for i in 0..7 {
             weekdays[i] = record.days_of_operation.contains(&(i + 1).to_string());
         }
-        Ok(FlightPlan{
-            company:record.airline_designator,
+        Ok(FlightPlan {
+            company: record.airline_designator,
             flight_no: record.flight_number,
             origin: AirportCode::new(record.departure_station).ok().unwrap(),
             destination: AirportCode::new(record.arrival_station).ok().unwrap(),
@@ -72,11 +71,10 @@ impl TryFrom<FlightLegRecord> for FlightPlan {
             end_date: record.valid_to,
             weekdays,
             dep_tz: record.time_var_dep,
-            arr_tz: record.time_var_arr
+            arr_tz: record.time_var_arr,
         })
     }
 }
-
 
 pub fn expand(plan: &FlightPlan) -> Vec<FlightRow> {
     let mut rows = Vec::new();
@@ -102,8 +100,8 @@ pub fn expand(plan: &FlightPlan) -> Vec<FlightRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{NaiveDate, NaiveTime, Duration};
     use crate::domain::airport::AirportCode;
+    use chrono::{Duration, NaiveDate, NaiveTime};
 
     #[test]
     fn test_expand_limit_30_days() {
@@ -124,9 +122,19 @@ mod tests {
 
         let rows = expand(&plan);
         // Expansion from Jan 1st to Jan 31st (inclusive) is 31 days
-        assert_eq!(rows.len(), 31, "Should expand exactly 31 days (start_date to start_date + 30 days)");
-        assert_eq!(rows.first().unwrap().dep_local.date_naive(), NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
-        assert_eq!(rows.last().unwrap().dep_local.date_naive(), NaiveDate::from_ymd_opt(2026, 1, 31).unwrap());
+        assert_eq!(
+            rows.len(),
+            31,
+            "Should expand exactly 31 days (start_date to start_date + 30 days)"
+        );
+        assert_eq!(
+            rows.first().unwrap().dep_local.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+        );
+        assert_eq!(
+            rows.last().unwrap().dep_local.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap()
+        );
     }
 
     #[test]
@@ -150,4 +158,3 @@ mod tests {
         assert_eq!(rows.len(), 10);
     }
 }
-

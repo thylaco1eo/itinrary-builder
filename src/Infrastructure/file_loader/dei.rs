@@ -3,75 +3,75 @@ use std::fmt;
 #[derive(Debug, PartialEq, Clone)]
 pub enum Dei {
     // --- Specific Codes ---
-    JointOperationAirlineDesignators,          // 001
-    OperatingAirlineDisclosureCodeShare,       // 002
-    AircraftOwner,                             // 003
-    CockpitCrewEmployer,                       // 004
-    CabinCrewEmployer,                         // 005
-    OnwardFlight,                              // 006
-    MealServiceNote,                           // 007 
-    TrafficRestrictionNote,                    // 008
-    OpAirlineDisclosureSharedLease,            // 009
-    DupLegCrossRefDupLegId,                    // 010
-    PartnershipSpecification,                  // 011
+    JointOperationAirlineDesignators,    // 001
+    OperatingAirlineDisclosureCodeShare, // 002
+    AircraftOwner,                       // 003
+    CockpitCrewEmployer,                 // 004
+    CabinCrewEmployer,                   // 005
+    OnwardFlight,                        // 006
+    MealServiceNote,                     // 007
+    TrafficRestrictionNote,              // 008
+    OpAirlineDisclosureSharedLease,      // 009
+    DupLegCrossRefDupLegId,              // 010
+    PartnershipSpecification,            // 011
 
-    DupLegCrossRefOpsLegId,                    // 050
+    DupLegCrossRefOpsLegId, // 050
 
-    UtcLocalTimeVariation,                     // 097
-    PaxTerminalArr,                            // 098
-    PaxTerminalDep,                            // 099
+    UtcLocalTimeVariation, // 097
+    PaxTerminalArr,        // 098
+    PaxTerminalDep,        // 099
 
-    PrbdSegmentOverride,                       // 101 (Passenger Reservations Booking Designator)
-    PrbmSegmentOverride,                       // 102 (Modifier)
-    BlockedSeatsOrUld,                         // 104
-    RestrictedPayload,                         // 105
-    PrbdExceedingMaxLength,                    // 106
-    PrbmExceedingMaxLength,                    // 107
-    AircraftConfigExceedingMaxLength,          // 108
-    MealServiceNoteExceedingMaxLength,         // 109
+    PrbdSegmentOverride,    // 101 (Passenger Reservations Booking Designator)
+    PrbmSegmentOverride,    // 102 (Modifier)
+    BlockedSeatsOrUld,      // 104
+    RestrictedPayload,      // 105
+    PrbdExceedingMaxLength, // 106
+    PrbmExceedingMaxLength, // 107
+    AircraftConfigExceedingMaxLength, // 108
+    MealServiceNoteExceedingMaxLength, // 109
 
-    MealServiceSegmentOverride,                // 111
-    AircraftOwnerSpec,                         // 113
-    CockpitCrewEmployerSpec,                   // 114
-    CabinCrewEmployerSpec,                     // 115
+    MealServiceSegmentOverride, // 111
+    AircraftOwnerSpec,          // 113
+    CockpitCrewEmployerSpec,    // 114
+    CabinCrewEmployerSpec,      // 115
 
-    AircraftTypePubOverride,                   // 121
-    FlightNumberOverride,                      // 122
-    JointOpAirlineSegOverride,                 // 125
-    OperatingAirlineDisclosure,                // 127
+    AircraftTypePubOverride,    // 121
+    FlightNumberOverride,       // 122
+    JointOpAirlineSegOverride,  // 125
+    OperatingAirlineDisclosure, // 127
 
-    TrafficRestrPaxOnly,                       // 170
-    TrafficRestrCargoMailOnly,                 // 171
-    TrafficRestrCargoOnly,                     // 172
-    TrafficRestrMailOnly,                      // 173
+    TrafficRestrPaxOnly,       // 170
+    TrafficRestrCargoMailOnly, // 171
+    TrafficRestrCargoOnly,     // 172
+    TrafficRestrMailOnly,      // 173
 
-    PaxTerminalSegOverrideArr,                 // 198
-    PaxTerminalSegOverrideDep,                 // 199
+    PaxTerminalSegOverrideArr, // 198
+    PaxTerminalSegOverrideDep, // 199
 
-    SubjectToGovApproval,                      // 201
-    PlaneChangeNoTypeChange,                   // 210
-    MinConnectTimeIntDomOverride,              // 220
+    SubjectToGovApproval,         // 201
+    PlaneChangeNoTypeChange,      // 210
+    MinConnectTimeIntDomOverride, // 220
 
-    PaxCheckIn,                                // 299
-    FlaglandingOffPointOnly,                   // 301
-    FlaglandingOffPointBoardPoint,             // 302
-    FlaglandingBoardPointOnly,                 // 303
+    PaxCheckIn,                    // 299
+    FlaglandingOffPointOnly,       // 301
+    FlaglandingOffPointBoardPoint, // 302
+    FlaglandingBoardPointOnly,     // 303
 
-    OnTimePerfIndicator,                       // 501
-    OnTimePerfDelayCancel,                     // 502
-    InFlightServiceInfo,                       // 503
-    SecureFlightIndicator,                     // 504
-    ElectronicTicketingInfo,                   // 505
-    RequestAllReservations,                    // 507
+    OnTimePerfIndicator,     // 501
+    OnTimePerfDelayCancel,   // 502
+    InFlightServiceInfo,     // 503
+    SecureFlightIndicator,   // 504
+    ElectronicTicketingInfo, // 505
+    RequestAllReservations,  // 507
 
-    TrafficRestrQualifierBoardPoint,           // 710
-    TrafficRestrQualifierOffPoint,             // 711
-    TrafficRestrQualifierBoardOffPoints,       // 712
+    TrafficRestrQualifierBoardPoint,     // 710
+    TrafficRestrQualifierOffPoint,       // 711
+    TrafficRestrQualifierBoardOffPoints, // 712
 
     // --- Ranges ---
-    TrafficRestrFreeFormat(u16),               // 713-799
-    BilateralUse(u16),                         // 800-899
-    InternalUse(u16),                          // 900-999
+    TrafficRestrFreeFormat(u16), // 713-799
+    BilateralUse(u16),           // 800-899
+    InternalUse(u16),            // 900-999
 
     // --- Fallback ---
     Unknown(u16),
@@ -153,20 +153,30 @@ impl Dei {
             Dei::OnwardFlight => "Onward Flight",
             Dei::MealServiceNote => "Meal Service Note",
             Dei::TrafficRestrictionNote => "Traffic Restriction Note",
-            Dei::OpAirlineDisclosureSharedLease => "Operating Airline Disclosure — Shared Airline or Wet Lease",
-            Dei::DupLegCrossRefDupLegId => "Duplicate Leg Cross Reference — Duplicate Leg Identification",
+            Dei::OpAirlineDisclosureSharedLease => {
+                "Operating Airline Disclosure — Shared Airline or Wet Lease"
+            }
+            Dei::DupLegCrossRefDupLegId => {
+                "Duplicate Leg Cross Reference — Duplicate Leg Identification"
+            }
             Dei::PartnershipSpecification => "Partnership Specification",
-            Dei::DupLegCrossRefOpsLegId => "Duplicate Leg Cross Reference — Operational Leg Identification",
+            Dei::DupLegCrossRefOpsLegId => {
+                "Duplicate Leg Cross Reference — Operational Leg Identification"
+            }
             Dei::UtcLocalTimeVariation => "UTC/Local Time Variation Specification",
             Dei::PaxTerminalArr => "Passenger Terminal Identifier — Arrival",
             Dei::PaxTerminalDep => "Passenger Terminal Identifier — Departure",
-            Dei::PrbdSegmentOverride => "Passenger Reservations Booking Designator Segment Override",
+            Dei::PrbdSegmentOverride => {
+                "Passenger Reservations Booking Designator Segment Override"
+            }
             Dei::PrbmSegmentOverride => "Passenger Reservations Booking Modifier Segment Override",
             Dei::BlockedSeatsOrUld => "Blocked Seats and/or Unit Load Devices",
             Dei::RestrictedPayload => "Restricted Payload",
             Dei::PrbdExceedingMaxLength => "PRBD Exceeding Maximum Length",
             Dei::PrbmExceedingMaxLength => "PRBM Exceeding Maximum Length",
-            Dei::AircraftConfigExceedingMaxLength => "Aircraft Configuration/Version Exceeding Maximum Length",
+            Dei::AircraftConfigExceedingMaxLength => {
+                "Aircraft Configuration/Version Exceeding Maximum Length"
+            }
             Dei::MealServiceNoteExceedingMaxLength => "Meal Service Note Exceeding Maximum Length",
             Dei::MealServiceSegmentOverride => "Meal Service Segment Override",
             Dei::AircraftOwnerSpec => "Aircraft Owner Specification",
@@ -174,7 +184,9 @@ impl Dei {
             Dei::CabinCrewEmployerSpec => "Cabin Crew Employer Specification",
             Dei::AircraftTypePubOverride => "Aircraft Type Publication Override",
             Dei::FlightNumberOverride => "Flight Number Override",
-            Dei::JointOpAirlineSegOverride => "Joint Operation Airline Designators Segment Override",
+            Dei::JointOpAirlineSegOverride => {
+                "Joint Operation Airline Designators Segment Override"
+            }
             Dei::OperatingAirlineDisclosure => "Operating Airline Disclosure",
             Dei::TrafficRestrPaxOnly => "Traffic Restriction Code — Passengers Only",
             Dei::TrafficRestrCargoMailOnly => "Traffic Restriction Code — Cargo/Mail Only",
@@ -190,14 +202,20 @@ impl Dei {
             Dei::FlaglandingOffPointBoardPoint => "Flaglanding at Off Point and Board Point",
             Dei::FlaglandingBoardPointOnly => "Flaglanding at Board Point Only",
             Dei::OnTimePerfIndicator => "On-Time Performance Indicator",
-            Dei::OnTimePerfDelayCancel => "On-Time Performance Indicator for Delays & Cancellations",
+            Dei::OnTimePerfDelayCancel => {
+                "On-Time Performance Indicator for Delays & Cancellations"
+            }
             Dei::InFlightServiceInfo => "In-Flight Service Information",
             Dei::SecureFlightIndicator => "Secure Flight Indicator",
             Dei::ElectronicTicketingInfo => "Electronic Ticketing Information",
             Dei::RequestAllReservations => "Request All Reservations",
-            Dei::TrafficRestrQualifierBoardPoint => "Traffic Restriction Code Qualifier at Board Point",
+            Dei::TrafficRestrQualifierBoardPoint => {
+                "Traffic Restriction Code Qualifier at Board Point"
+            }
             Dei::TrafficRestrQualifierOffPoint => "Traffic Restriction Code Qualifier at Off Point",
-            Dei::TrafficRestrQualifierBoardOffPoints => "Traffic Restriction Code Qualifier at Board and Off Points",
+            Dei::TrafficRestrQualifierBoardOffPoints => {
+                "Traffic Restriction Code Qualifier at Board and Off Points"
+            }
             Dei::TrafficRestrFreeFormat(_) => "Traffic Restriction Code Information — Free Format",
             Dei::BilateralUse(_) => "Data Element Identifiers — Free Format Bilateral Use",
             Dei::InternalUse(_) => "Data Element Identifiers — Free Format Internal Use",

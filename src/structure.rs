@@ -1,6 +1,5 @@
 use serde::Deserialize;
 
-
 #[derive(Deserialize, Clone)]
 pub struct DataBase {
     host: String,
@@ -82,11 +81,8 @@ pub struct Configuration {
 }
 
 impl Configuration {
-    pub fn new(database: DataBase,log: Log) -> Self {
-        Configuration {
-            database,
-            log,
-        }
+    pub fn new(database: DataBase, log: Log) -> Self {
+        Configuration { database, log }
     }
     pub fn database(&self) -> &DataBase {
         &self.database
