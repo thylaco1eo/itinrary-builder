@@ -1,9 +1,8 @@
 mod Infrastructure;
 mod api;
+mod config;
 pub mod domain;
 pub mod services;
-pub mod structure;
-//mod config;
 mod memory;
 
 use actix_web::middleware::Logger;
@@ -16,7 +15,7 @@ use log4rs::{
 use memory::core::WebData;
 use std::fs::File;
 use std::io::prelude::*;
-use structure::*;
+use crate::config::Configuration;
 use surrealdb::engine::any::connect;
 use surrealdb::opt::auth::Root as DBRoot;
 use Infrastructure::db;
@@ -30,6 +29,7 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to read config file");
     let config: Configuration =
         serde_json::from_str(&contents).expect("Failed to parse config file");
+    let application_port = config.application().port();
     let logfile = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(config.log().pattern())))
         .build(config.log().file())
@@ -89,7 +89,10 @@ async fn main() -> std::io::Result<()> {
         app_state.airports().len(),
         app_state.flights().len()
     );
-    println!("HTTP server listening on http://127.0.0.1:8080");
+    println!(
+        "HTTP server listening on http://127.0.0.1:{}",
+        application_port
+    );
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
@@ -99,7 +102,7 @@ async fn main() -> std::io::Result<()> {
             .service(api::ib::get_ib)
             .wrap(Logger::default())
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("127.0.0.1", application_port))?
     .run()
     .await
 }

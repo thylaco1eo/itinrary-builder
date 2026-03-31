@@ -1,4 +1,4 @@
-use crate::structure::DataBase;
+use crate::config::DataBase;
 use serde_json;
 use std::collections::HashMap;
 use neo4rs::{query, Query};
