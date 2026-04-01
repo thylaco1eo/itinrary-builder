@@ -18,8 +18,29 @@ use std::io::prelude::*;
 use crate::config::Configuration;
 use surrealdb::engine::any::connect;
 use surrealdb::opt::auth::Root as DBRoot;
+use surrealdb::{engine::any, Surreal};
 use Infrastructure::db;
 //use Infrastructure::db::repository::flight_repo::get_flights;
+
+async fn connect_database(config: &Configuration) -> surrealdb::Result<Surreal<any::Any>> {
+    let database = connect(format!(
+        "ws://{}:{}",
+        config.database().host(),
+        config.database().port()
+    ))
+    .await?;
+    database
+        .signin(DBRoot {
+            username: config.database().username().to_string(),
+            password: config.database().password().to_string(),
+        })
+        .await?;
+    database
+        .use_ns(config.database().namespace())
+        .use_db(config.database().dbname())
+        .await?;
+    Ok(database)
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -49,21 +70,10 @@ async fn main() -> std::io::Result<()> {
         config.database().host(),
         config.database().port()
     );
-    let database = connect(format!(
-        "ws://{}:{}",
-        config.database().host(),
-        config.database().port()
-    ))
+    let database = connect_database(&config)
     .await
     .expect("Failed to connect to SurrealDB");
     println!("Connected to SurrealDB.");
-    database
-        .signin(DBRoot {
-            username: config.database().username().to_string(),
-            password: config.database().password().to_string(),
-        })
-        .await
-        .expect("Failed to authenticate to SurrealDB");
     println!("Authenticated to SurrealDB.");
 
     db::surrealDB::connection::check_db_status(
@@ -77,13 +87,13 @@ async fn main() -> std::io::Result<()> {
         config.database().namespace(),
         config.database().dbname()
     );
-    database
-        .use_ns(config.database().namespace())
-        .use_db(config.database().dbname())
-        .await
-        .expect("Failed to select namespace and database");
     println!("Selected namespace and database.");
-    let app_state: web::Data<WebData> = web::Data::new(WebData::new(database.clone()).await);
+    println!("Opening a fresh SurrealDB session for memory preload...");
+    let database = connect_database(&config)
+        .await
+        .expect("Failed to create application database session");
+    println!("Fresh SurrealDB session ready.");
+    let app_state: web::Data<WebData> = web::Data::new(WebData::new(database).await);
     println!(
         "Startup complete. {} airports and {} flights are ready in memory.",
         app_state.airports().len(),
