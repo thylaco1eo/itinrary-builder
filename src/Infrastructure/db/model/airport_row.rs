@@ -1,7 +1,6 @@
 use crate::domain::airport::{Airport, AirportCode, AirportCodeError};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::{Kind, SurrealValue, Value};
-use surrealdb_types::Geometry;
 
 #[derive(Serialize, Deserialize, Clone, SurrealValue)]
 #[serde(transparent)]
@@ -28,24 +27,12 @@ pub struct AirportRow {
     pub mct: Option<u32>,
 }
 
-#[derive(Serialize, Deserialize, Clone, SurrealValue)]
-pub struct AirportStoredRow {
-    pub code: String,
-    pub timezone: String,
-    pub name: Option<String>,
-    pub city: Option<String>,
-    pub country: Option<String>,
-    pub location: Geometry,
-    pub mct: Option<u32>,
-}
-
 #[derive(Debug)]
 pub enum AirportRowError {
     InvalidCode(AirportCodeError),
     InvalidTimezone(chrono_tz::ParseError),
     InvalidLatitude,
     InvalidLongitude,
-    InvalidLocationType,
 }
 
 impl From<AirportCodeError> for AirportRowError {
@@ -81,27 +68,6 @@ impl TryFrom<AirportRow> for Airport {
             row.longitude,
             row.mct,
         ))
-    }
-}
-
-impl TryFrom<AirportStoredRow> for AirportRow {
-    type Error = AirportRowError;
-
-    fn try_from(row: AirportStoredRow) -> Result<Self, Self::Error> {
-        let Geometry::Point(point) = row.location else {
-            return Err(AirportRowError::InvalidLocationType);
-        };
-
-        Ok(Self {
-            code: AirportCodeRow { code: row.code },
-            timezone: row.timezone,
-            name: row.name,
-            city: row.city,
-            country: row.country,
-            latitude: point.y(),
-            longitude: point.x(),
-            mct: row.mct,
-        })
     }
 }
 

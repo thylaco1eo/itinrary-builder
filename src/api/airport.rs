@@ -33,9 +33,6 @@ pub async fn add_airport(
             AirportRowError::InvalidLongitude => {
                 Ok(HttpResponse::BadRequest().json(json!({"status": "invalid longitude"})))
             }
-            AirportRowError::InvalidLocationType => {
-                Ok(HttpResponse::BadRequest().json(json!({"status": "invalid location type"})))
-            }
         };
     }
 
