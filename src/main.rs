@@ -112,7 +112,7 @@ async fn main() -> std::io::Result<()> {
             .service(api::ib::get_ib)
             .wrap(Logger::default())
     })
-    .bind(("127.0.0.1", application_port))?
+    .bind(("0.0.0.0", application_port))?
     .run()
     .await
 }
