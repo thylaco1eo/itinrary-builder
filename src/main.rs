@@ -2,9 +2,10 @@ mod Infrastructure;
 mod api;
 mod config;
 pub mod domain;
-pub mod services;
 mod memory;
+pub mod services;
 
+use crate::config::Configuration;
 use actix_web::middleware::Logger;
 use actix_web::{web, App, HttpServer};
 use log4rs::{
@@ -15,7 +16,6 @@ use log4rs::{
 use memory::core::WebData;
 use std::fs::File;
 use std::io::prelude::*;
-use crate::config::Configuration;
 use surrealdb::engine::any::connect;
 use surrealdb::opt::auth::Root as DBRoot;
 use surrealdb::{engine::any, Surreal};
@@ -71,8 +71,8 @@ async fn main() -> std::io::Result<()> {
         config.database().port()
     );
     let database = connect_database(&config)
-    .await
-    .expect("Failed to connect to SurrealDB");
+        .await
+        .expect("Failed to connect to SurrealDB");
     println!("Connected to SurrealDB.");
     println!("Authenticated to SurrealDB.");
 

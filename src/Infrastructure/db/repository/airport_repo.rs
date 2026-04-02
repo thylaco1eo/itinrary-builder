@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use actix_web::rt::time::timeout;
 use crate::Infrastructure::db::model::airport_row::{AirportCodeRow, AirportRow};
+use actix_web::rt::time::timeout;
 use geo::Point;
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
@@ -42,7 +42,12 @@ pub async fn add_airport(db: &Surreal<Any>, airport: AirportRow) -> surrealdb::R
 pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
     println!("Querying airports from SurrealDB...");
     let probe_started = Instant::now();
-    match timeout(Duration::from_secs(10), db.query("SELECT id FROM airport LIMIT 1")).await {
+    match timeout(
+        Duration::from_secs(10),
+        db.query("SELECT id FROM airport LIMIT 1"),
+    )
+    .await
+    {
         Ok(Ok(_)) => {
             println!(
                 "Airport probe query completed in {:?}.",
@@ -86,7 +91,10 @@ pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
                 break;
             }
             Err(_) => {
-                eprintln!("Airport batch query timed out at offset {} after 30s.", start);
+                eprintln!(
+                    "Airport batch query timed out at offset {} after 30s.",
+                    start
+                );
                 break;
             }
         };
@@ -162,9 +170,7 @@ fn map_airport_row(record: Value) -> Option<AirportRow> {
         _ => return None,
     };
     let mct = match object.get("mct") {
-        Some(Value::Number(number)) => number
-            .to_int()
-            .and_then(|value| u32::try_from(value).ok()),
+        Some(Value::Number(number)) => number.to_int().and_then(|value| u32::try_from(value).ok()),
         Some(Value::None | Value::Null) | None => None,
         _ => None,
     };

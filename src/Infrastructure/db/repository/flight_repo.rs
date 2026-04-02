@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
-use actix_web::rt::time::timeout;
 use crate::domain::{flightplan::FlightPlan, route::Route};
 use crate::Infrastructure::db::model::flight_row::FlightRow;
+use actix_web::rt::time::timeout;
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 use surrealdb_types::RecordId;
@@ -62,9 +62,17 @@ pub async fn add_route(db: &Surreal<Any>, plan: &FlightPlan) -> surrealdb::Resul
 pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightRow> {
     println!("Querying flights from SurrealDB...");
     let probe_started = Instant::now();
-    match timeout(Duration::from_secs(10), db.query("SELECT id FROM flight LIMIT 1")).await {
+    match timeout(
+        Duration::from_secs(10),
+        db.query("SELECT id FROM flight LIMIT 1"),
+    )
+    .await
+    {
         Ok(Ok(_)) => {
-            println!("Flight probe query completed in {:?}.", probe_started.elapsed());
+            println!(
+                "Flight probe query completed in {:?}.",
+                probe_started.elapsed()
+            );
         }
         Ok(Err(error)) => {
             eprintln!(
@@ -103,7 +111,10 @@ pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightRow> {
                 break;
             }
             Err(_) => {
-                eprintln!("Flight batch query timed out at offset {} after 30s.", start);
+                eprintln!(
+                    "Flight batch query timed out at offset {} after 30s.",
+                    start
+                );
                 break;
             }
         };

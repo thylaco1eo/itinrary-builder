@@ -10,7 +10,7 @@ pub struct Segment {
     pub companies: Vec<String>,
     pub flights: Vec<String>,
     pub distance: f64,
-    pub mct: i64,
+    pub mct: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
