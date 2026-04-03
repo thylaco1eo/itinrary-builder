@@ -7,13 +7,13 @@ use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 use surrealdb_types::RecordId;
 
-pub async fn add_flights_batch(db: &Surreal<Any>, rows: Vec<FlightRow>) -> surrealdb::Result<()> {
+pub async fn add_flights_batch(db: &Surreal<Any>, rows: &[FlightRow]) -> surrealdb::Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
 
     // 使用 SDK 的 insert 一次性插入多条记录
-    let _created: Vec<FlightRow> = db.insert("flight").content(rows).await?;
+    let _created: Vec<FlightRow> = db.insert("flight").content(rows.to_vec()).await?;
     Ok(())
 }
 

@@ -6,12 +6,20 @@ use crate::Infrastructure::db::repository::flight_repo::get_flights;
 use chrono::NaiveDate;
 use std::collections::HashMap;
 use std::mem::size_of;
+use std::sync::{RwLock, RwLockReadGuard};
 use surrealdb::{engine::any, Surreal};
 
 pub struct WebData {
     database: Surreal<any::Any>,
-    flights: HashMap<String, Flightcore>,
+    flights: RwLock<HashMap<String, Flightcore>>,
     airports: HashMap<String, Airport>,
+}
+
+#[derive(Debug, Default)]
+pub struct FlightCacheUpdateSummary {
+    pub upserted: usize,
+    pub overwritten: usize,
+    pub skipped_missing_airports: usize,
 }
 
 impl WebData {
@@ -101,7 +109,7 @@ impl WebData {
 
         WebData {
             database: data_base,
-            flights,
+            flights: RwLock::new(flights),
             airports,
         }
     }
@@ -110,12 +118,34 @@ impl WebData {
         &self.database
     }
 
-    pub fn flights(&self) -> &HashMap<String, Flightcore> {
-        &self.flights
+    pub fn flights(&self) -> RwLockReadGuard<'_, HashMap<String, Flightcore>> {
+        self.flights.read().unwrap()
     }
 
     pub fn airports(&self) -> &HashMap<String, Airport> {
         &self.airports
+    }
+
+    pub fn upsert_flights(&self, rows: Vec<FlightRow>) -> FlightCacheUpdateSummary {
+        let mut flights = self.flights.write().unwrap();
+        let mut summary = FlightCacheUpdateSummary::default();
+
+        for row in rows {
+            match build_flight_entry(row, &self.airports) {
+                FlightRowLoadResult::Ready { key, flight } => {
+                    if flights.insert(key, flight).is_some() {
+                        summary.overwritten += 1;
+                    } else {
+                        summary.upserted += 1;
+                    }
+                }
+                FlightRowLoadResult::MissingAirports => {
+                    summary.skipped_missing_airports += 1;
+                }
+            }
+        }
+
+        summary
     }
 }
 

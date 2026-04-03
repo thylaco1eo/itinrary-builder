@@ -193,12 +193,13 @@ pub async fn get_ib(
         log_route_result(&request_trace, path_index + 1, path);
     }
 
+    let flights = data.flights();
     request_info(
         &request_trace,
         "flight_lookup_strategy",
         json!({
             "strategy": "hashmap_by_company_flight_origin_destination_dep_date",
-            "flight_count": data.flights().len(),
+            "flight_count": flights.len(),
             "max_connection_window_hours": MAX_CONNECTION_WINDOW_HOURS
         }),
     );
@@ -220,7 +221,7 @@ pub async fn get_ib(
 
         let combinations = build_itineraries_for_path(
             path,
-            data.flights(),
+            &flights,
             dep_date,
             &request_trace,
             path_index + 1,
@@ -603,6 +604,14 @@ fn validate_connection(
     }
 
     let previous_flight = current[segment_index - 1];
+    if same_operating_flight(previous_flight, next_flight) {
+        return Err(format!(
+            "same-flight continuation {} -> {} should be matched by a synthesized through-flight, not a transfer",
+            format_flight(previous_flight),
+            format_flight(next_flight)
+        ));
+    }
+
     let (earliest_departure, latest_departure, minimum_connection_minutes) =
         connection_bounds(path, segment_index, current).unwrap();
 
@@ -626,6 +635,10 @@ fn validate_connection(
     }
 
     Ok(())
+}
+
+fn same_operating_flight(left: &Flightcore, right: &Flightcore) -> bool {
+    left.company() == right.company() && left.flight_id() == right.flight_id()
 }
 
 fn connection_bounds(

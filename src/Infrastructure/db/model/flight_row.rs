@@ -1,7 +1,7 @@
 use crate::domain::airport::AirportCode;
 use crate::domain::flight::Flight;
 use crate::domain::flightplan::FlightPlan;
-use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use surrealdb_types::{RecordId, SurrealValue};
@@ -75,7 +75,10 @@ impl FlightRow {
                 .map(|dt| dt.to_utc())
                 .unwrap(),
             arr_local: arr_offset
-                .from_local_datetime(&date.and_time(flight_plan.arr_time))
+                .from_local_datetime(
+                    &(date + Duration::days(flight_plan.arrival_day_offset))
+                        .and_time(flight_plan.arr_time),
+                )
                 .single()
                 .map(|dt| dt.to_utc())
                 .unwrap(),
