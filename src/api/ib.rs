@@ -4,6 +4,7 @@ use std::io::Write;
 
 use actix_web::{get, web, HttpResponse};
 use chrono::{Duration, NaiveDate, Utc};
+use chrono_tz::Tz;
 use serde::Serialize;
 use serde_json::{json, Value};
 use surrealdb_types::{RecordId, RecordIdKey};
@@ -35,6 +36,10 @@ struct FlightInfoResponse {
 struct ItineraryResponse {
     airports: Vec<String>,
     flights: Vec<FlightInfoResponse>,
+    total_flight_time_minutes: u32,
+    total_travel_time_minutes: u32,
+    transfer_time_minutes: u32,
+    transfer_count: u32,
 }
 
 #[get("/ib")]
@@ -227,9 +232,10 @@ pub async fn get_ib(
             path_index + 1,
         );
         for combination in combinations {
+            let expanded_segments = expand_itinerary_segments(&combination, &flights);
             let itinerary = ItineraryResponse {
-                airports: airports.clone(),
-                flights: combination
+                airports: airports_for_segments(&expanded_segments).unwrap_or_else(|| airports.clone()),
+                flights: expanded_segments
                     .iter()
                     .map(|flight| FlightInfoResponse {
                         company: flight.company().to_string(),
@@ -241,6 +247,13 @@ pub async fn get_ib(
                         block_time_minutes: flight.block_time_minutes(),
                     })
                     .collect(),
+                total_flight_time_minutes: expanded_segments
+                    .iter()
+                    .map(|flight| flight.block_time_minutes())
+                    .sum(),
+                total_travel_time_minutes: total_travel_time_minutes(&expanded_segments),
+                transfer_time_minutes: transfer_time_minutes(&expanded_segments),
+                transfer_count: transfer_count(&expanded_segments),
             };
 
             let dedup_key = itinerary
@@ -641,6 +654,172 @@ fn same_operating_flight(left: &Flightcore, right: &Flightcore) -> bool {
     left.company() == right.company() && left.flight_id() == right.flight_id()
 }
 
+fn expand_itinerary_segments<'a>(
+    flights: &[&'a Flightcore],
+    all_flights: &'a HashMap<String, Flightcore>,
+) -> Vec<&'a Flightcore> {
+    let mut expanded = Vec::new();
+
+    for flight in flights {
+        expanded.extend(expand_flight_segments(flight, all_flights));
+    }
+
+    expanded
+}
+
+fn expand_flight_segments<'a>(
+    flight: &'a Flightcore,
+    all_flights: &'a HashMap<String, Flightcore>,
+) -> Vec<&'a Flightcore> {
+    let candidates = all_flights
+        .values()
+        .filter(|candidate| is_subflight_candidate(flight, candidate))
+        .collect::<Vec<_>>();
+
+    let Some(path) = find_same_flight_path(flight, &candidates) else {
+        return vec![flight];
+    };
+
+    let mut expanded = Vec::new();
+    for subflight in path {
+        expanded.extend(expand_flight_segments(subflight, all_flights));
+    }
+    expanded
+}
+
+fn is_subflight_candidate(parent: &Flightcore, candidate: &Flightcore) -> bool {
+    same_operating_flight(parent, candidate)
+        && !same_flight_instance(parent, candidate)
+        && candidate.dep_local() >= parent.dep_local()
+        && candidate.arr_local() <= parent.arr_local()
+        && (candidate.origin() != parent.origin() || candidate.destination() != parent.destination())
+}
+
+fn same_flight_instance(left: &Flightcore, right: &Flightcore) -> bool {
+    same_operating_flight(left, right)
+        && left.origin() == right.origin()
+        && left.destination() == right.destination()
+        && left.dep_local() == right.dep_local()
+        && left.arr_local() == right.arr_local()
+}
+
+fn find_same_flight_path<'a>(
+    parent: &'a Flightcore,
+    candidates: &[&'a Flightcore],
+) -> Option<Vec<&'a Flightcore>> {
+    let mut ordered = candidates.to_vec();
+    ordered.sort_by(|left, right| {
+        left.dep_local()
+            .cmp(right.dep_local())
+            .then_with(|| left.arr_local().cmp(right.arr_local()))
+            .then_with(|| left.origin().as_str().cmp(right.origin().as_str()))
+            .then_with(|| left.destination().as_str().cmp(right.destination().as_str()))
+    });
+
+    let mut path = Vec::new();
+    let mut visited = HashSet::new();
+    if search_same_flight_path(parent, &ordered, &mut path, &mut visited) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn search_same_flight_path<'a>(
+    parent: &'a Flightcore,
+    candidates: &[&'a Flightcore],
+    path: &mut Vec<&'a Flightcore>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    let current_origin = path
+        .last()
+        .map(|flight| flight.destination().as_str())
+        .unwrap_or(parent.origin().as_str());
+    let earliest_departure = path
+        .last()
+        .map(|flight| flight.arr_local())
+        .unwrap_or(parent.dep_local());
+
+    for candidate in candidates {
+        let signature = flight_signature(candidate);
+        if visited.contains(&signature) {
+            continue;
+        }
+        if candidate.origin().as_str() != current_origin {
+            continue;
+        }
+        if path.is_empty() && candidate.dep_local() != parent.dep_local() {
+            continue;
+        }
+        if candidate.dep_local() < earliest_departure {
+            continue;
+        }
+
+        path.push(candidate);
+        visited.insert(signature.clone());
+
+        let is_complete = candidate.destination() == parent.destination()
+            && candidate.arr_local() == parent.arr_local()
+            && path.len() >= 2;
+        if is_complete || search_same_flight_path(parent, candidates, path, visited) {
+            return true;
+        }
+
+        path.pop();
+        visited.remove(&signature);
+    }
+
+    false
+}
+
+fn airports_for_segments(flights: &[&Flightcore]) -> Option<Vec<String>> {
+    let first = flights.first()?;
+    let mut airports = vec![first.origin().as_str().to_string()];
+    airports.extend(
+        flights
+            .iter()
+            .map(|flight| flight.destination().as_str().to_string()),
+    );
+    Some(airports)
+}
+
+fn transfer_count(flights: &[&Flightcore]) -> u32 {
+    flights
+        .windows(2)
+        .filter(|pair| !same_operating_flight(pair[0], pair[1]))
+        .count() as u32
+}
+
+fn transfer_time_minutes(flights: &[&Flightcore]) -> u32 {
+    flights
+        .windows(2)
+        .filter(|pair| !same_operating_flight(pair[0], pair[1]))
+        .map(|pair| connection_minutes(pair[0], pair[1]))
+        .sum()
+}
+
+fn total_travel_time_minutes(flights: &[&Flightcore]) -> u32 {
+    let Some(first) = flights.first() else {
+        return 0;
+    };
+    let Some(last) = flights.last() else {
+        return 0;
+    };
+
+    let departure = first.dep_local().with_timezone(&Utc);
+    let arrival = last.arr_local().with_timezone(&Utc);
+    arrival.signed_duration_since(departure).num_minutes().max(0) as u32
+}
+
+fn connection_minutes(previous: &Flightcore, next: &Flightcore) -> u32 {
+    let previous_arrival = previous.arr_local().with_timezone(&Utc);
+    let next_departure = next.dep_local().with_timezone(&Utc);
+    next_departure
+        .signed_duration_since(previous_arrival)
+        .num_minutes()
+        .max(0) as u32
+}
+
 fn connection_bounds(
     path: &PathResult,
     segment_index: usize,
@@ -815,6 +994,22 @@ fn format_flight(flight: &Flightcore) -> String {
     )
 }
 
+fn flight_signature(flight: &Flightcore) -> String {
+    format!(
+        "{}:{}:{}:{}:{}:{}",
+        flight.company(),
+        flight.flight_id(),
+        flight.origin().as_str(),
+        flight.destination().as_str(),
+        format_datetime_for_signature(flight.dep_local()),
+        format_datetime_for_signature(flight.arr_local())
+    )
+}
+
+fn format_datetime_for_signature(value: &chrono::DateTime<Tz>) -> String {
+    value.to_rfc3339()
+}
+
 fn airport_codes(airports: &[RecordId]) -> Option<Vec<String>> {
     airports.iter().map(record_id_code).collect()
 }
@@ -823,5 +1018,118 @@ fn record_id_code(record_id: &RecordId) -> Option<String> {
     match &record_id.key {
         RecordIdKey::String(code) => Some(code.clone()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::airport::AirportCode;
+    use crate::domain::flight::Flightcore;
+    use chrono::TimeZone;
+    use std::collections::HashMap;
+
+    #[test]
+    fn expands_same_flight_stopover_into_physical_segments() {
+        let flights = sample_same_flight_map();
+        let through = flights
+            .get("CA_897_PEK_GRU_2026-04-02")
+            .expect("through-flight should exist");
+
+        let segments = expand_flight_segments(through, &flights);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].origin().as_str(), "PEK");
+        assert_eq!(segments[0].destination().as_str(), "MAD");
+        assert_eq!(segments[1].origin().as_str(), "MAD");
+        assert_eq!(segments[1].destination().as_str(), "GRU");
+        assert_eq!(transfer_count(&segments), 0);
+        assert_eq!(transfer_time_minutes(&segments), 0);
+        assert_eq!(total_travel_time_minutes(&segments), 1500);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|flight| flight.block_time_minutes())
+                .sum::<u32>(),
+            1365
+        );
+    }
+
+    #[test]
+    fn counts_transfers_between_different_flights_only() {
+        let tz = chrono_tz::UTC;
+        let first = Flightcore::new(
+            "CA".to_string(),
+            "123".to_string(),
+            AirportCode::new("PEK").unwrap(),
+            AirportCode::new("MUC").unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, 8, 0, 0).unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, 12, 0, 0).unwrap(),
+            240,
+        );
+        let second = Flightcore::new(
+            "LH".to_string(),
+            "456".to_string(),
+            AirportCode::new("MUC").unwrap(),
+            AirportCode::new("GRU").unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, 14, 30, 0).unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, 23, 0, 0).unwrap(),
+            510,
+        );
+        let itinerary = vec![&first, &second];
+
+        assert_eq!(transfer_count(&itinerary), 1);
+        assert_eq!(transfer_time_minutes(&itinerary), 150);
+        assert_eq!(total_travel_time_minutes(&itinerary), 900);
+    }
+
+    fn sample_same_flight_map() -> HashMap<String, Flightcore> {
+        let mut flights = HashMap::new();
+        let pek_tz = chrono_tz::Asia::Shanghai;
+        let mad_tz = chrono_tz::Europe::Madrid;
+        let gru_tz = chrono_tz::America::Sao_Paulo;
+
+        let pek_mad = Flightcore::new(
+            "CA".to_string(),
+            "897".to_string(),
+            AirportCode::new("PEK").unwrap(),
+            AirportCode::new("MAD").unwrap(),
+            pek_tz.with_ymd_and_hms(2026, 4, 2, 15, 0, 0).unwrap(),
+            mad_tz.with_ymd_and_hms(2026, 4, 2, 21, 0, 0).unwrap(),
+            720,
+        );
+        let mad_gru = Flightcore::new(
+            "CA".to_string(),
+            "897".to_string(),
+            AirportCode::new("MAD").unwrap(),
+            AirportCode::new("GRU").unwrap(),
+            mad_tz.with_ymd_and_hms(2026, 4, 2, 23, 15, 0).unwrap(),
+            gru_tz.with_ymd_and_hms(2026, 4, 3, 5, 0, 0).unwrap(),
+            645,
+        );
+        let pek_gru = Flightcore::new(
+            "CA".to_string(),
+            "897".to_string(),
+            AirportCode::new("PEK").unwrap(),
+            AirportCode::new("GRU").unwrap(),
+            pek_tz.with_ymd_and_hms(2026, 4, 2, 15, 0, 0).unwrap(),
+            gru_tz.with_ymd_and_hms(2026, 4, 3, 5, 0, 0).unwrap(),
+            1500,
+        );
+
+        flights.insert(
+            flight_storage_key("CA", "897", "PEK", "MAD", NaiveDate::from_ymd_opt(2026, 4, 2).unwrap()),
+            pek_mad,
+        );
+        flights.insert(
+            flight_storage_key("CA", "897", "MAD", "GRU", NaiveDate::from_ymd_opt(2026, 4, 2).unwrap()),
+            mad_gru,
+        );
+        flights.insert(
+            flight_storage_key("CA", "897", "PEK", "GRU", NaiveDate::from_ymd_opt(2026, 4, 2).unwrap()),
+            pek_gru,
+        );
+
+        flights
     }
 }
