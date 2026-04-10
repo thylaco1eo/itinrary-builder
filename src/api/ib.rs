@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::{create_dir_all, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 
 use actix_web::{get, web, HttpResponse};
@@ -13,6 +13,7 @@ use crate::domain::airport::AirportCode;
 use crate::domain::flight::Flightcore;
 use crate::domain::itinerary::Itinerary;
 use crate::memory::core::{flight_storage_key, WebData};
+use crate::runtime_paths;
 use crate::Infrastructure::db::model::flight_row::FlightDesignatorRow;
 use crate::Infrastructure::db::repository::route_repo::{self, PathResult, Segment};
 
@@ -20,7 +21,6 @@ const DEFAULT_MAX_TRANSPORTS: u8 = 0;
 const MAX_CIRCUITY: f64 = 2.0;
 const DEFAULT_MCT_MINUTES: i64 = 180;
 const MAX_CONNECTION_WINDOW_HOURS: i64 = 24;
-const REQUEST_LOG_PATH: &str = "./log/requests.log";
 
 #[derive(Serialize)]
 struct FlightDesignatorResponse {
@@ -1021,11 +1021,12 @@ fn write_request_log(level: &str, request_trace: &str, event: &str, data: Value)
 }
 
 fn append_request_log(entry: &Value) -> std::io::Result<()> {
-    create_dir_all("./log")?;
+    let request_log_path = runtime_paths::request_log_file()?;
+    runtime_paths::create_parent_dir(&request_log_path)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(REQUEST_LOG_PATH)?;
+        .open(request_log_path)?;
     writeln!(file, "{}", entry)
 }
 

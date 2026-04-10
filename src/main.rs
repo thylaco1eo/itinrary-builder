@@ -3,6 +3,7 @@ mod api;
 mod config;
 pub mod domain;
 mod memory;
+mod runtime_paths;
 pub mod services;
 
 use crate::config::Configuration;
@@ -14,8 +15,7 @@ use log4rs::{
     encode::pattern::PatternEncoder,
 };
 use memory::core::WebData;
-use std::fs::File;
-use std::io::prelude::*;
+use std::fs;
 use surrealdb::engine::any::connect;
 use surrealdb::opt::auth::Root as DBRoot;
 use surrealdb::{engine::any, Surreal};
@@ -44,16 +44,20 @@ async fn connect_database(config: &Configuration) -> surrealdb::Result<Surreal<a
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let mut file = File::open("./src/itinbuilder.json")?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .expect("Failed to read config file");
+    let config_path = runtime_paths::configuration_file()?;
+    println!("Loading configuration from {}...", config_path.display());
+
+    let contents = fs::read_to_string(&config_path)?;
     let config: Configuration =
         serde_json::from_str(&contents).expect("Failed to parse config file");
+
+    let log_path = runtime_paths::resolve_executable_relative(config.log().file())?;
+    runtime_paths::create_parent_dir(&log_path)?;
+
     let application_port = config.application().port();
     let logfile = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(config.log().pattern())))
-        .build(config.log().file())
+        .build(&log_path)
         .expect("Failed to create file appender");
     let log_config = log4rs::Config::builder()
         .appender(Appender::builder().build("logfile", Box::new(logfile)))
@@ -64,6 +68,11 @@ async fn main() -> std::io::Result<()> {
         )
         .expect("Failed to build Log config");
     let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
+    println!("Application log file: {}", log_path.display());
+    println!(
+        "Request log file: {}",
+        runtime_paths::request_log_file()?.display()
+    );
 
     println!(
         "Connecting to SurrealDB at ws://{}:{}...",
