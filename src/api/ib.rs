@@ -13,13 +13,21 @@ use crate::domain::airport::AirportCode;
 use crate::domain::flight::Flightcore;
 use crate::domain::itinerary::Itinerary;
 use crate::memory::core::{flight_storage_key, WebData};
+use crate::Infrastructure::db::model::flight_row::FlightDesignatorRow;
 use crate::Infrastructure::db::repository::route_repo::{self, PathResult, Segment};
 
-const MAX_HOPS: u8 = 2;
+const DEFAULT_MAX_TRANSPORTS: u8 = 0;
 const MAX_CIRCUITY: f64 = 2.0;
 const DEFAULT_MCT_MINUTES: i64 = 180;
 const MAX_CONNECTION_WINDOW_HOURS: i64 = 24;
 const REQUEST_LOG_PATH: &str = "./log/requests.log";
+
+#[derive(Serialize)]
+struct FlightDesignatorResponse {
+    company: String,
+    flight_id: String,
+    operational_suffix: Option<String>,
+}
 
 #[derive(Serialize)]
 struct FlightInfoResponse {
@@ -30,6 +38,16 @@ struct FlightInfoResponse {
     departure: String,
     arrival: String,
     block_time_minutes: u32,
+    departure_terminal: Option<String>,
+    arrival_terminal: Option<String>,
+    operating_company: String,
+    operating_flight_id: String,
+    operating_suffix: Option<String>,
+    duplicate_flights: Vec<FlightDesignatorResponse>,
+    joint_operation_companies: Vec<String>,
+    meal_service_note: Option<String>,
+    in_flight_service_info: Option<String>,
+    electronic_ticketing_info: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -51,6 +69,7 @@ pub async fn get_ib(
     let raw_origin = request.get_origin();
     let raw_destination = request.get_destination();
     let dep_date_raw = request.get_dep_date();
+    let raw_transport = request.get_transport();
     let request_trace = request_trace_id(&raw_origin, &raw_destination, &dep_date_raw);
 
     request_info(
@@ -59,7 +78,8 @@ pub async fn get_ib(
         json!({
             "raw_origin": raw_origin,
             "raw_destination": raw_destination,
-            "raw_dep_date": dep_date_raw
+            "raw_dep_date": dep_date_raw,
+            "raw_transport": raw_transport
         }),
     );
 
@@ -113,13 +133,49 @@ pub async fn get_ib(
         }
     };
 
+    let max_transports = match parse_transport_limit(raw_transport.as_deref()) {
+        Ok(value) => value,
+        Err(message) => {
+            request_warn(
+                &request_trace,
+                "request_rejected_invalid_transport",
+                json!({
+                    "transport": raw_transport,
+                    "message": message
+                }),
+            );
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "status": "invalid request",
+                "message": message
+            })));
+        }
+    };
+    let max_hops = match max_hops_for_transport_limit(max_transports) {
+        Ok(value) => value,
+        Err(message) => {
+            request_warn(
+                &request_trace,
+                "request_rejected_invalid_transport",
+                json!({
+                    "transport": raw_transport,
+                    "message": message
+                }),
+            );
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "status": "invalid request",
+                "message": message
+            })));
+        }
+    };
+
     request_info(
         &request_trace,
         "request_normalized",
         json!({
             "origin": origin,
             "destination": destination,
-            "dep_date": dep_date.to_string()
+            "dep_date": dep_date.to_string(),
+            "transport": max_transports
         }),
     );
 
@@ -148,7 +204,8 @@ pub async fn get_ib(
         json!({
             "origin": origin,
             "destination": destination,
-            "max_hops": MAX_HOPS,
+            "transport": max_transports,
+            "max_hops": max_hops,
             "max_circuity": MAX_CIRCUITY
         }),
     );
@@ -156,7 +213,7 @@ pub async fn get_ib(
         data.database(),
         origin.as_str(),
         destination.as_str(),
-        MAX_HOPS,
+        max_hops,
         MAX_CIRCUITY,
     )
     .await
@@ -224,17 +281,28 @@ pub async fn get_ib(
             continue;
         };
 
-        let combinations = build_itineraries_for_path(
-            path,
-            &flights,
-            dep_date,
-            &request_trace,
-            path_index + 1,
-        );
+        let combinations =
+            build_itineraries_for_path(path, &flights, dep_date, &request_trace, path_index + 1);
         for combination in combinations {
             let expanded_segments = expand_itinerary_segments(&combination, &flights);
+            let effective_transport_count = transfer_count(&expanded_segments);
+            if effective_transport_count > u32::from(max_transports) {
+                request_info(
+                    &request_trace,
+                    "itinerary_skipped_transport_limit",
+                    json!({
+                        "path_index": path_index + 1,
+                        "flight_chain": flight_chain_json(&combination),
+                        "transport_limit": max_transports,
+                        "effective_transport_count": effective_transport_count
+                    }),
+                );
+                continue;
+            }
+
             let itinerary = ItineraryResponse {
-                airports: airports_for_segments(&expanded_segments).unwrap_or_else(|| airports.clone()),
+                airports: airports_for_segments(&expanded_segments)
+                    .unwrap_or_else(|| airports.clone()),
                 flights: expanded_segments
                     .iter()
                     .map(|flight| FlightInfoResponse {
@@ -245,6 +313,26 @@ pub async fn get_ib(
                         departure: flight.dep_local().to_rfc3339(),
                         arrival: flight.arr_local().to_rfc3339(),
                         block_time_minutes: flight.block_time_minutes(),
+                        departure_terminal: flight.departure_terminal().map(ToOwned::to_owned),
+                        arrival_terminal: flight.arrival_terminal().map(ToOwned::to_owned),
+                        operating_company: flight.operating_designator().company.clone(),
+                        operating_flight_id: flight.operating_designator().flight_number.clone(),
+                        operating_suffix: flight.operating_designator().operational_suffix.clone(),
+                        duplicate_flights: flight
+                            .duplicate_designators()
+                            .iter()
+                            .map(flight_designator_response)
+                            .collect(),
+                        joint_operation_companies: flight
+                            .joint_operation_airline_designators()
+                            .to_vec(),
+                        meal_service_note: flight.meal_service_note().map(ToOwned::to_owned),
+                        in_flight_service_info: flight
+                            .in_flight_service_info()
+                            .map(ToOwned::to_owned),
+                        electronic_ticketing_info: flight
+                            .electronic_ticketing_info()
+                            .map(ToOwned::to_owned),
                     })
                     .collect(),
                 total_flight_time_minutes: expanded_segments
@@ -692,7 +780,8 @@ fn is_subflight_candidate(parent: &Flightcore, candidate: &Flightcore) -> bool {
         && !same_flight_instance(parent, candidate)
         && candidate.dep_local() >= parent.dep_local()
         && candidate.arr_local() <= parent.arr_local()
-        && (candidate.origin() != parent.origin() || candidate.destination() != parent.destination())
+        && (candidate.origin() != parent.origin()
+            || candidate.destination() != parent.destination())
 }
 
 fn same_flight_instance(left: &Flightcore, right: &Flightcore) -> bool {
@@ -713,7 +802,11 @@ fn find_same_flight_path<'a>(
             .cmp(right.dep_local())
             .then_with(|| left.arr_local().cmp(right.arr_local()))
             .then_with(|| left.origin().as_str().cmp(right.origin().as_str()))
-            .then_with(|| left.destination().as_str().cmp(right.destination().as_str()))
+            .then_with(|| {
+                left.destination()
+                    .as_str()
+                    .cmp(right.destination().as_str())
+            })
     });
 
     let mut path = Vec::new();
@@ -784,7 +877,15 @@ fn airports_for_segments(flights: &[&Flightcore]) -> Option<Vec<String>> {
 }
 
 fn transfer_count(flights: &[&Flightcore]) -> u32 {
-    flights
+    transport_count(flights).saturating_sub(1)
+}
+
+fn transport_count(flights: &[&Flightcore]) -> u32 {
+    if flights.is_empty() {
+        return 0;
+    }
+
+    1 + flights
         .windows(2)
         .filter(|pair| !same_operating_flight(pair[0], pair[1]))
         .count() as u32
@@ -808,7 +909,10 @@ fn total_travel_time_minutes(flights: &[&Flightcore]) -> u32 {
 
     let departure = first.dep_local().with_timezone(&Utc);
     let arrival = last.arr_local().with_timezone(&Utc);
-    arrival.signed_duration_since(departure).num_minutes().max(0) as u32
+    arrival
+        .signed_duration_since(departure)
+        .num_minutes()
+        .max(0) as u32
 }
 
 fn connection_minutes(previous: &Flightcore, next: &Flightcore) -> u32 {
@@ -954,8 +1058,30 @@ fn flight_json(flight: &Flightcore) -> Value {
         "destination": flight.destination().as_str(),
         "departure": flight.dep_local().to_rfc3339(),
         "arrival": flight.arr_local().to_rfc3339(),
-        "block_time_minutes": flight.block_time_minutes()
+        "block_time_minutes": flight.block_time_minutes(),
+        "departure_terminal": flight.departure_terminal(),
+        "arrival_terminal": flight.arrival_terminal(),
+        "operating_company": flight.operating_designator().company.clone(),
+        "operating_flight_id": flight.operating_designator().flight_number.clone(),
+        "operating_suffix": flight.operating_designator().operational_suffix.clone(),
+        "duplicate_flights": flight
+            .duplicate_designators()
+            .iter()
+            .map(flight_designator_response)
+            .collect::<Vec<_>>(),
+        "joint_operation_companies": flight.joint_operation_airline_designators(),
+        "meal_service_note": flight.meal_service_note(),
+        "in_flight_service_info": flight.in_flight_service_info(),
+        "electronic_ticketing_info": flight.electronic_ticketing_info()
     })
+}
+
+fn flight_designator_response(designator: &FlightDesignatorRow) -> FlightDesignatorResponse {
+    FlightDesignatorResponse {
+        company: designator.company.clone(),
+        flight_id: designator.flight_number.clone(),
+        operational_suffix: designator.operational_suffix.clone(),
+    }
 }
 
 fn connection_window_json(
@@ -1021,6 +1147,27 @@ fn record_id_code(record_id: &RecordId) -> Option<String> {
     }
 }
 
+fn parse_transport_limit(raw_transport: Option<&str>) -> Result<u8, String> {
+    let Some(raw_transport) = raw_transport
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(DEFAULT_MAX_TRANSPORTS);
+    };
+
+    let transport = raw_transport
+        .parse::<u8>()
+        .map_err(|_| "transport must be a non-negative integer".to_string())?;
+
+    Ok(transport)
+}
+
+fn max_hops_for_transport_limit(transport: u8) -> Result<u8, String> {
+    transport
+        .checked_add(1)
+        .ok_or_else(|| "transport must be less than 255".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,6 +1190,7 @@ mod tests {
         assert_eq!(segments[0].destination().as_str(), "MAD");
         assert_eq!(segments[1].origin().as_str(), "MAD");
         assert_eq!(segments[1].destination().as_str(), "GRU");
+        assert_eq!(transport_count(&segments), 1);
         assert_eq!(transfer_count(&segments), 0);
         assert_eq!(transfer_time_minutes(&segments), 0);
         assert_eq!(total_travel_time_minutes(&segments), 1500);
@@ -1066,6 +1214,14 @@ mod tests {
             tz.with_ymd_and_hms(2026, 4, 2, 8, 0, 0).unwrap(),
             tz.with_ymd_and_hms(2026, 4, 2, 12, 0, 0).unwrap(),
             240,
+            None,
+            None,
+            sample_designator("CA", "123"),
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
         );
         let second = Flightcore::new(
             "LH".to_string(),
@@ -1075,12 +1231,49 @@ mod tests {
             tz.with_ymd_and_hms(2026, 4, 2, 14, 30, 0).unwrap(),
             tz.with_ymd_and_hms(2026, 4, 2, 23, 0, 0).unwrap(),
             510,
+            None,
+            None,
+            sample_designator("LH", "456"),
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
         );
         let itinerary = vec![&first, &second];
 
+        assert_eq!(transport_count(&itinerary), 2);
         assert_eq!(transfer_count(&itinerary), 1);
         assert_eq!(transfer_time_minutes(&itinerary), 150);
         assert_eq!(total_travel_time_minutes(&itinerary), 900);
+    }
+
+    #[test]
+    fn defaults_transport_limit_when_request_omits_it() {
+        assert_eq!(parse_transport_limit(None).unwrap(), DEFAULT_MAX_TRANSPORTS);
+        assert_eq!(
+            parse_transport_limit(Some("   ")).unwrap(),
+            DEFAULT_MAX_TRANSPORTS
+        );
+    }
+
+    #[test]
+    fn transport_limit_maps_to_hops() {
+        assert_eq!(max_hops_for_transport_limit(0).unwrap(), 1);
+        assert_eq!(max_hops_for_transport_limit(2).unwrap(), 3);
+    }
+
+    #[test]
+    fn allows_zero_and_rejects_invalid_transport_limit() {
+        assert_eq!(parse_transport_limit(Some("0")).unwrap(), 0);
+        assert_eq!(
+            parse_transport_limit(Some("-1")).unwrap_err(),
+            "transport must be a non-negative integer"
+        );
+        assert_eq!(
+            parse_transport_limit(Some("abc")).unwrap_err(),
+            "transport must be a non-negative integer"
+        );
     }
 
     fn sample_same_flight_map() -> HashMap<String, Flightcore> {
@@ -1097,6 +1290,14 @@ mod tests {
             pek_tz.with_ymd_and_hms(2026, 4, 2, 15, 0, 0).unwrap(),
             mad_tz.with_ymd_and_hms(2026, 4, 2, 21, 0, 0).unwrap(),
             720,
+            Some("T3".to_string()),
+            Some("T1".to_string()),
+            sample_designator("CA", "897"),
+            vec![sample_designator("LH", "7172")],
+            vec!["XB".to_string()],
+            Some("M".to_string()),
+            Some("9".to_string()),
+            Some("ET".to_string()),
         );
         let mad_gru = Flightcore::new(
             "CA".to_string(),
@@ -1106,6 +1307,14 @@ mod tests {
             mad_tz.with_ymd_and_hms(2026, 4, 2, 23, 15, 0).unwrap(),
             gru_tz.with_ymd_and_hms(2026, 4, 3, 5, 0, 0).unwrap(),
             645,
+            Some("T1".to_string()),
+            Some("T2".to_string()),
+            sample_designator("CA", "897"),
+            vec![sample_designator("LH", "7172")],
+            vec!["XB".to_string()],
+            Some("M".to_string()),
+            Some("9".to_string()),
+            Some("ET".to_string()),
         );
         let pek_gru = Flightcore::new(
             "CA".to_string(),
@@ -1115,21 +1324,55 @@ mod tests {
             pek_tz.with_ymd_and_hms(2026, 4, 2, 15, 0, 0).unwrap(),
             gru_tz.with_ymd_and_hms(2026, 4, 3, 5, 0, 0).unwrap(),
             1500,
+            Some("T3".to_string()),
+            Some("T2".to_string()),
+            sample_designator("CA", "897"),
+            vec![sample_designator("LH", "7172")],
+            vec!["XB".to_string()],
+            Some("M".to_string()),
+            Some("9".to_string()),
+            Some("ET".to_string()),
         );
 
         flights.insert(
-            flight_storage_key("CA", "897", "PEK", "MAD", NaiveDate::from_ymd_opt(2026, 4, 2).unwrap()),
+            flight_storage_key(
+                "CA",
+                "897",
+                "PEK",
+                "MAD",
+                NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+            ),
             pek_mad,
         );
         flights.insert(
-            flight_storage_key("CA", "897", "MAD", "GRU", NaiveDate::from_ymd_opt(2026, 4, 2).unwrap()),
+            flight_storage_key(
+                "CA",
+                "897",
+                "MAD",
+                "GRU",
+                NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+            ),
             mad_gru,
         );
         flights.insert(
-            flight_storage_key("CA", "897", "PEK", "GRU", NaiveDate::from_ymd_opt(2026, 4, 2).unwrap()),
+            flight_storage_key(
+                "CA",
+                "897",
+                "PEK",
+                "GRU",
+                NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+            ),
             pek_gru,
         );
 
         flights
+    }
+
+    fn sample_designator(company: &str, flight_id: &str) -> FlightDesignatorRow {
+        FlightDesignatorRow {
+            company: company.to_string(),
+            flight_number: flight_id.to_string(),
+            operational_suffix: None,
+        }
     }
 }

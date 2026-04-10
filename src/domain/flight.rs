@@ -1,4 +1,5 @@
 use crate::domain::airport::AirportCode;
+use crate::Infrastructure::db::model::flight_row::FlightDesignatorRow;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 
@@ -66,6 +67,14 @@ pub struct Flightcore {
     departure: DateTime<Tz>,
     arrival: DateTime<Tz>,
     block_time: u32,
+    departure_terminal: Option<String>,
+    arrival_terminal: Option<String>,
+    operating_designator: FlightDesignatorRow,
+    duplicate_designators: Vec<FlightDesignatorRow>,
+    joint_operation_airline_designators: Vec<String>,
+    meal_service_note: Option<String>,
+    in_flight_service_info: Option<String>,
+    electronic_ticketing_info: Option<String>,
 }
 
 impl Flightcore {
@@ -77,6 +86,14 @@ impl Flightcore {
         departure: DateTime<Tz>,
         arrival: DateTime<Tz>,
         block_time: u32,
+        departure_terminal: Option<String>,
+        arrival_terminal: Option<String>,
+        operating_designator: FlightDesignatorRow,
+        duplicate_designators: Vec<FlightDesignatorRow>,
+        joint_operation_airline_designators: Vec<String>,
+        meal_service_note: Option<String>,
+        in_flight_service_info: Option<String>,
+        electronic_ticketing_info: Option<String>,
     ) -> Self {
         Self {
             company,
@@ -86,6 +103,14 @@ impl Flightcore {
             departure,
             arrival,
             block_time,
+            departure_terminal,
+            arrival_terminal,
+            operating_designator,
+            duplicate_designators,
+            joint_operation_airline_designators,
+            meal_service_note,
+            in_flight_service_info,
+            electronic_ticketing_info,
         }
     }
 
@@ -115,5 +140,37 @@ impl Flightcore {
 
     pub fn company(&self) -> &str {
         &self.company
+    }
+
+    pub fn departure_terminal(&self) -> Option<&str> {
+        self.departure_terminal.as_deref()
+    }
+
+    pub fn arrival_terminal(&self) -> Option<&str> {
+        self.arrival_terminal.as_deref()
+    }
+
+    pub fn operating_designator(&self) -> &FlightDesignatorRow {
+        &self.operating_designator
+    }
+
+    pub fn duplicate_designators(&self) -> &[FlightDesignatorRow] {
+        &self.duplicate_designators
+    }
+
+    pub fn joint_operation_airline_designators(&self) -> &[String] {
+        &self.joint_operation_airline_designators
+    }
+
+    pub fn meal_service_note(&self) -> Option<&str> {
+        self.meal_service_note.as_deref()
+    }
+
+    pub fn in_flight_service_info(&self) -> Option<&str> {
+        self.in_flight_service_info.as_deref()
+    }
+
+    pub fn electronic_ticketing_info(&self) -> Option<&str> {
+        self.electronic_ticketing_info.as_deref()
     }
 }

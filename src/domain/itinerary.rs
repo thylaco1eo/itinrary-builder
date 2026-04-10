@@ -5,6 +5,7 @@ pub struct Itinerary {
     origin: String,
     destination: String,
     dep_date: String,
+    transport: Option<String>,
 }
 impl Itinerary {
     pub fn new() -> Itinerary {
@@ -12,6 +13,7 @@ impl Itinerary {
             origin: String::new(),
             destination: String::new(),
             dep_date: String::new(),
+            transport: None,
         }
     }
     pub fn get_origin(&self) -> String {
@@ -22,5 +24,8 @@ impl Itinerary {
     }
     pub fn get_dep_date(&self) -> String {
         self.dep_date.clone()
+    }
+    pub fn get_transport(&self) -> Option<String> {
+        self.transport.clone()
     }
 }

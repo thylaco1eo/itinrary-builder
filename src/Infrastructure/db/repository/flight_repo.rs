@@ -95,7 +95,7 @@ pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightRow> {
 
     loop {
         let sql = format!(
-            "SELECT id, company, flight_num, origin_code, destination_code, dep_local, arr_local, block_time_minutes FROM flight START {} LIMIT {}",
+            "SELECT id, company, flight_num, origin_code, destination_code, dep_local, arr_local, block_time_minutes, departure_terminal, arrival_terminal, operating_designator, duplicate_designators, joint_operation_airline_designators, meal_service_note, in_flight_service_info, electronic_ticketing_info, type3_legs FROM flight START {} LIMIT {}",
             start, batch_size
         );
         let batch_started = Instant::now();

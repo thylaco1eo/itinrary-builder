@@ -180,6 +180,14 @@ fn try_from(row: FlightRow, airports: &HashMap<String, Airport>) -> Option<Fligh
         row.dep_local.with_timezone(&origin_tz),
         row.arr_local.with_timezone(&destination_tz),
         row.block_time_minutes,
+        row.departure_terminal,
+        row.arrival_terminal,
+        row.operating_designator,
+        row.duplicate_designators,
+        row.joint_operation_airline_designators,
+        row.meal_service_note,
+        row.in_flight_service_info,
+        row.electronic_ticketing_info,
     );
     Some(flight)
 }

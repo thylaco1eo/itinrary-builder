@@ -146,6 +146,7 @@ fn legs_belong_to_same_flight(previous: &FlightLegRecord, next: &FlightLegRecord
         && previous.flight_number == next.flight_number
         && previous.itinerary_variation == next.itinerary_variation
         && previous.service_type == next.service_type
+        && previous.frequency_rate == next.frequency_rate
         && next.leg_sequence == previous.leg_sequence.saturating_add(1)
         && previous.arrival_station == next.departure_station
 }

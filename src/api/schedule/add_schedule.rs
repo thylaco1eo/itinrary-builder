@@ -37,12 +37,7 @@ pub async fn add_schedule(
                 segment_count += block.legs.len();
 
                 let start_build = Instant::now();
-                let leg_records = block
-                    .legs
-                    .iter()
-                    .map(|leg| leg.leg.clone())
-                    .collect::<Vec<_>>();
-                let plans = match flightplan::plans_from_leg_records(&leg_records) {
+                let plans = match flightplan::plans_from_leg_blocks(&block.legs) {
                     Ok(plans) => plans,
                     Err(e) => {
                         eprintln!("❌ Error building flight plans: {}", e);
