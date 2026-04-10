@@ -1,11 +1,15 @@
 use std::time::{Duration, Instant};
 
 use crate::domain::{flightplan::FlightPlan, route::Route};
-use crate::Infrastructure::db::model::flight_row::FlightRow;
+use crate::Infrastructure::db::model::flight_row::{FlightCacheRow, FlightRow};
 use actix_web::rt::time::timeout;
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 use surrealdb_types::RecordId;
+
+const FLIGHT_PRELOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const INITIAL_FLIGHT_BATCH_SIZE: usize = 2_000;
+const MIN_FLIGHT_BATCH_SIZE: usize = 250;
 
 pub async fn add_flights_batch(db: &Surreal<Any>, rows: &[FlightRow]) -> surrealdb::Result<()> {
     if rows.is_empty() {
@@ -59,7 +63,7 @@ pub async fn add_route(db: &Surreal<Any>, plan: &FlightPlan) -> surrealdb::Resul
     Ok(())
 }
 
-pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightRow> {
+pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightCacheRow> {
     println!("Querying flights from SurrealDB...");
     let probe_started = Instant::now();
     match timeout(
@@ -91,15 +95,15 @@ pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightRow> {
     let started = Instant::now();
     let mut flights = Vec::new();
     let mut start = 0usize;
-    let batch_size = 10_000usize;
+    let mut batch_size = INITIAL_FLIGHT_BATCH_SIZE;
 
     loop {
         let sql = format!(
-            "SELECT id, company, flight_num, origin_code, destination_code, dep_local, arr_local, block_time_minutes, departure_terminal, arrival_terminal, operating_designator, duplicate_designators, joint_operation_airline_designators, meal_service_note, in_flight_service_info, electronic_ticketing_info, type3_legs FROM flight START {} LIMIT {}",
+            "SELECT company, flight_num, origin_code, destination_code, dep_local, arr_local, block_time_minutes, departure_terminal, arrival_terminal, operating_designator, duplicate_designators, joint_operation_airline_designators, meal_service_note, in_flight_service_info, electronic_ticketing_info FROM flight START {} LIMIT {}",
             start, batch_size
         );
         let batch_started = Instant::now();
-        let mut response = match timeout(Duration::from_secs(30), db.query(&sql)).await {
+        let mut response = match timeout(FLIGHT_PRELOAD_TIMEOUT, db.query(&sql)).await {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 eprintln!(
@@ -111,15 +115,30 @@ pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightRow> {
                 break;
             }
             Err(_) => {
+                if batch_size > MIN_FLIGHT_BATCH_SIZE {
+                    let next_batch_size = (batch_size / 2).max(MIN_FLIGHT_BATCH_SIZE);
+                    eprintln!(
+                        "Flight batch query timed out at offset {} after {:?}. Retrying with smaller batch size {} -> {}.",
+                        start,
+                        FLIGHT_PRELOAD_TIMEOUT,
+                        batch_size,
+                        next_batch_size
+                    );
+                    batch_size = next_batch_size;
+                    continue;
+                }
+
                 eprintln!(
-                    "Flight batch query timed out at offset {} after 30s.",
-                    start
+                    "Flight batch query timed out at offset {} after {:?} even at minimum batch size {}.",
+                    start,
+                    FLIGHT_PRELOAD_TIMEOUT,
+                    batch_size
                 );
                 break;
             }
         };
 
-        let batch_rows: Vec<FlightRow> = match response.take(0) {
+        let batch_rows: Vec<FlightCacheRow> = match response.take(0) {
             Ok(rows) => rows,
             Err(error) => {
                 eprintln!(

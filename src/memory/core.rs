@@ -1,6 +1,6 @@
 use crate::domain::airport::{Airport, AirportCode};
 use crate::domain::flight::Flightcore;
-use crate::Infrastructure::db::model::flight_row::FlightRow;
+use crate::Infrastructure::db::model::flight_row::{FlightCacheRow, FlightRow};
 use crate::Infrastructure::db::repository::airport_repo::get_all_airports;
 use crate::Infrastructure::db::repository::flight_repo::get_flights;
 use chrono::NaiveDate;
@@ -52,14 +52,14 @@ impl WebData {
         );
 
         println!("Loading flights into memory...");
-        let flight_rows: Vec<FlightRow> = get_flights(&data_base).await;
+        let flight_rows: Vec<FlightCacheRow> = get_flights(&data_base).await;
         let source_flight_rows = flight_rows.len();
         let flight_row_buffer_bytes =
             estimate_flight_row_vec_bytes(&flight_rows, flight_rows.capacity());
         let mut skipped_missing_airports = 0usize;
         let mut duplicate_keys = 0usize;
         for row in flight_rows {
-            match build_flight_entry(row, &airports) {
+            match build_flight_entry_from_cache_row(row, &airports) {
                 FlightRowLoadResult::Ready { key, flight } => {
                     if flights.insert(key, flight).is_some() {
                         duplicate_keys += 1;
@@ -101,8 +101,9 @@ impl WebData {
             format_bytes(startup_peak_bytes)
         );
         println!(
-            "Type sizes: Airport = {} B, FlightRow = {} B, Flightcore = {} B.",
+            "Type sizes: Airport = {} B, FlightCacheRow = {} B, FlightRow = {} B, Flightcore = {} B.",
             size_of::<Airport>(),
+            size_of::<FlightCacheRow>(),
             size_of::<FlightRow>(),
             size_of::<Flightcore>()
         );
@@ -166,7 +167,7 @@ pub fn flight_storage_key(
     )
 }
 
-fn try_from(row: FlightRow, airports: &HashMap<String, Airport>) -> Option<Flightcore> {
+fn try_from(row: FlightCacheRow, airports: &HashMap<String, Airport>) -> Option<Flightcore> {
     if !airports.contains_key(&row.origin_code) || !airports.contains_key(&row.destination_code) {
         return None;
     }
@@ -198,6 +199,13 @@ enum FlightRowLoadResult {
 }
 
 fn build_flight_entry(row: FlightRow, airports: &HashMap<String, Airport>) -> FlightRowLoadResult {
+    build_flight_entry_from_cache_row(flight_cache_row_from_flight_row(row), airports)
+}
+
+fn build_flight_entry_from_cache_row(
+    row: FlightCacheRow,
+    airports: &HashMap<String, Airport>,
+) -> FlightRowLoadResult {
     match try_from(row, airports) {
         Some(flight) => {
             let key = flight_storage_key(
@@ -210,6 +218,26 @@ fn build_flight_entry(row: FlightRow, airports: &HashMap<String, Airport>) -> Fl
             FlightRowLoadResult::Ready { key, flight }
         }
         None => FlightRowLoadResult::MissingAirports,
+    }
+}
+
+fn flight_cache_row_from_flight_row(row: FlightRow) -> FlightCacheRow {
+    FlightCacheRow {
+        company: row.company,
+        flight_num: row.flight_num,
+        origin_code: row.origin_code,
+        destination_code: row.destination_code,
+        dep_local: row.dep_local,
+        arr_local: row.arr_local,
+        block_time_minutes: row.block_time_minutes,
+        departure_terminal: row.departure_terminal,
+        arrival_terminal: row.arrival_terminal,
+        operating_designator: row.operating_designator,
+        duplicate_designators: row.duplicate_designators,
+        joint_operation_airline_designators: row.joint_operation_airline_designators,
+        meal_service_note: row.meal_service_note,
+        in_flight_service_info: row.in_flight_service_info,
+        electronic_ticketing_info: row.electronic_ticketing_info,
     }
 }
 
@@ -231,9 +259,9 @@ fn estimate_airport_row_vec_bytes(
             .sum::<usize>()
 }
 
-fn estimate_flight_row_vec_bytes(rows: &[FlightRow], capacity: usize) -> usize {
-    size_of::<Vec<FlightRow>>()
-        + capacity * size_of::<FlightRow>()
+fn estimate_flight_row_vec_bytes(rows: &[FlightCacheRow], capacity: usize) -> usize {
+    size_of::<Vec<FlightCacheRow>>()
+        + capacity * size_of::<FlightCacheRow>()
         + rows
             .iter()
             .map(|row| {

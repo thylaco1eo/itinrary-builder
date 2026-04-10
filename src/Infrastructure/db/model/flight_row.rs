@@ -78,6 +78,29 @@ pub struct FlightRow {
     pub type3_legs: Vec<FlightType3LegRow>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, SurrealValue)]
+pub struct FlightCacheRow {
+    pub company: String,
+    pub flight_num: String,
+    pub origin_code: String,
+    pub destination_code: String,
+    pub dep_local: DateTime<Utc>,
+    pub arr_local: DateTime<Utc>,
+    pub block_time_minutes: u32,
+    #[serde(default)]
+    pub departure_terminal: Option<String>,
+    #[serde(default)]
+    pub arrival_terminal: Option<String>,
+    pub operating_designator: FlightDesignatorRow,
+    #[serde(default)]
+    pub duplicate_designators: Vec<FlightDesignatorRow>,
+    #[serde(default)]
+    pub joint_operation_airline_designators: Vec<String>,
+    pub meal_service_note: Option<String>,
+    pub in_flight_service_info: Option<String>,
+    pub electronic_ticketing_info: Option<String>,
+}
+
 impl TryFrom<FlightRow> for Flight {
     type Error = FlightRowError;
 
