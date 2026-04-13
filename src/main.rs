@@ -64,7 +64,7 @@ async fn main() -> std::io::Result<()> {
         .build(
             Root::builder()
                 .appender("logfile")
-                .build(log::LevelFilter::Trace),
+                .build(log::LevelFilter::Debug),
         )
         .expect("Failed to build Log config");
     let _handler = log4rs::init_config(log_config).expect("Failed to initialize logger");
