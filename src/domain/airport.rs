@@ -1,3 +1,7 @@
+use crate::domain::mct::{
+    AirportMctRecord, ConnectionBuildingFilter, DEFAULT_AIRPORT_MCT_MINUTES,
+    ensure_airport_default_mct_records,
+};
 use chrono_tz::Tz;
 use geo::Point;
 #[derive(Debug)]
@@ -27,9 +31,11 @@ pub struct Airport {
     name: Option<String>,
     city: Option<String>,
     country: Option<String>,
+    state: Option<String>,
     location: Point,
     timezone: Tz,
-    minimum_connection_time: u32,
+    mct_records: Vec<AirportMctRecord>,
+    connection_building_filters: Vec<ConnectionBuildingFilter>,
 }
 
 impl Airport {
@@ -40,8 +46,13 @@ impl Airport {
             name: None,
             city: None,
             country: None,
+            state: None,
             location: Point::new(longitude, latitude),
-            minimum_connection_time: 180, // 你当前的业务假设
+            mct_records: ensure_airport_default_mct_records(
+                Vec::new(),
+                Some(DEFAULT_AIRPORT_MCT_MINUTES),
+            ),
+            connection_building_filters: Vec::new(),
         }
     }
 
@@ -51,9 +62,11 @@ impl Airport {
         name: Option<String>,
         city: Option<String>,
         country: Option<String>,
+        state: Option<String>,
         longitude: f64,
         latitude: f64,
-        minimum_connection_time: Option<u32>,
+        mct_records: Vec<AirportMctRecord>,
+        connection_building_filters: Vec<ConnectionBuildingFilter>,
     ) -> Self {
         Self {
             id,
@@ -61,8 +74,10 @@ impl Airport {
             name,
             city,
             country,
+            state,
             location: Point::new(longitude, latitude),
-            minimum_connection_time: minimum_connection_time.unwrap_or(180),
+            mct_records,
+            connection_building_filters,
         }
     }
     pub fn id(&self) -> &AirportCode {
@@ -79,6 +94,10 @@ impl Airport {
     pub fn country(&self) -> Option<&str> {
         self.country.as_deref()
     }
+
+    pub fn state(&self) -> Option<&str> {
+        self.state.as_deref()
+    }
     pub fn timezone(&self) -> Tz {
         self.timezone
     }
@@ -88,7 +107,12 @@ impl Airport {
     pub fn longitude(&self) -> f64 {
         self.location.0.x
     }
-    pub fn minimum_connection_time(&self) -> u32 {
-        self.minimum_connection_time
+
+    pub fn mct_records(&self) -> &[AirportMctRecord] {
+        &self.mct_records
+    }
+
+    pub fn connection_building_filters(&self) -> &[ConnectionBuildingFilter] {
+        &self.connection_building_filters
     }
 }

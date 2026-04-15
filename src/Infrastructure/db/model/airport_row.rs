@@ -1,4 +1,7 @@
 use crate::domain::airport::{Airport, AirportCode, AirportCodeError};
+use crate::domain::mct::{
+    AirportMctRecord, ConnectionBuildingFilter, ensure_airport_default_mct_records,
+};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::{Kind, SurrealValue, Value};
 
@@ -22,9 +25,13 @@ pub struct AirportRow {
     pub name: Option<String>,
     pub city: Option<String>,
     pub country: Option<String>,
+    pub state: Option<String>,
     pub latitude: f64,
     pub longitude: f64,
-    pub mct: Option<u32>,
+    #[serde(default)]
+    pub mct_records: Vec<AirportMctRecord>,
+    #[serde(default)]
+    pub connection_building_filters: Vec<ConnectionBuildingFilter>,
 }
 
 #[derive(Debug)]
@@ -33,6 +40,17 @@ pub enum AirportRowError {
     InvalidTimezone(chrono_tz::ParseError),
     InvalidLatitude,
     InvalidLongitude,
+}
+
+impl std::fmt::Display for AirportRowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidCode(_) => write!(f, "invalid airport code"),
+            Self::InvalidTimezone(_) => write!(f, "invalid airport timezone"),
+            Self::InvalidLatitude => write!(f, "invalid airport latitude"),
+            Self::InvalidLongitude => write!(f, "invalid airport longitude"),
+        }
+    }
 }
 
 impl From<AirportCodeError> for AirportRowError {
@@ -58,15 +76,19 @@ impl TryFrom<AirportRow> for Airport {
             return Err(AirportRowError::InvalidLongitude);
         }
 
+        let mct_records = ensure_airport_default_mct_records(row.mct_records, None);
+
         Ok(Airport::new_full(
             AirportCode::new(row.code.code)?,
             row.timezone.parse()?,
             row.name,
             row.city,
             row.country,
+            row.state,
             row.latitude,
             row.longitude,
-            row.mct,
+            mct_records,
+            row.connection_building_filters,
         ))
     }
 }

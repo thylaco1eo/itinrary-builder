@@ -1,5 +1,8 @@
 use std::time::{Duration, Instant};
 
+use crate::domain::mct::{
+    AirportMctRecord, ConnectionBuildingFilter, ensure_airport_default_mct_records,
+};
 use crate::Infrastructure::db::model::airport_row::{AirportCodeRow, AirportRow};
 use actix_web::rt::time::timeout;
 use geo::Point;
@@ -25,18 +28,91 @@ pub async fn add_airport(db: &Surreal<Any>, airport: AirportRow) -> surrealdb::R
     // Use raw query to ensure the correct insertion if high-level API fails
     let point = Geometry::Point(Point::new(airport.longitude, airport.latitude));
 
-    let _response = db.query("CREATE type::record('airport',$id) SET code = $code, timezone = $timezone, name = $name, city = $city, country = $country, location = $location, mct = $mct")
+    let _response = db.query("CREATE type::record('airport',$id) SET code = $code, timezone = $timezone, name = $name, city = $city, country = $country, state = $state, location = $location, mct_records = $mct_records, connection_building_filters = $connection_building_filters")
         .bind(("id", id))
         .bind(("code", airport.code.code))
         .bind(("timezone", airport.timezone))
         .bind(("name", airport.name))
         .bind(("city", airport.city))
         .bind(("country", airport.country))
+        .bind(("state", airport.state))
         .bind(("location", Value::Geometry(point)))  // ← 关键修改
-        .bind(("mct", airport.mct))
+        .bind(("mct_records", airport.mct_records))
+        .bind((
+            "connection_building_filters",
+            airport.connection_building_filters,
+        ))
         .await?;
 
     Ok(true)
+}
+
+pub async fn get_airport(db: &Surreal<Any>, code: &str) -> surrealdb::Result<Option<AirportRow>> {
+    let record: Option<Value> = db.select(("airport", code.to_string())).await?;
+    Ok(record.and_then(map_airport_row))
+}
+
+pub async fn get_all_airport_codes(db: &Surreal<Any>) -> surrealdb::Result<Vec<String>> {
+    let mut response = db.query("SELECT code FROM airport").await?;
+    let records: Vec<Value> = response.take(0)?;
+    Ok(records
+        .into_iter()
+        .filter_map(|record| {
+            let Value::Object(object) = record else {
+                return None;
+            };
+            match object.get("code") {
+                Some(Value::String(code)) => Some(code.clone()),
+                _ => None,
+            }
+        })
+        .collect())
+}
+
+pub async fn set_airport_mct_records(
+    db: &Surreal<Any>,
+    code: &str,
+    mct_records: Vec<AirportMctRecord>,
+) -> surrealdb::Result<bool> {
+    set_airport_mct_payload(db, code, mct_records, Vec::new(), false).await
+}
+
+pub async fn set_airport_mct_payload(
+    db: &Surreal<Any>,
+    code: &str,
+    mct_records: Vec<AirportMctRecord>,
+    connection_building_filters: Vec<ConnectionBuildingFilter>,
+    update_filters: bool,
+) -> surrealdb::Result<bool> {
+    let code_row = AirportCodeRow {
+        code: code.to_string(),
+    };
+    if !check_airport_exists(db, &code_row).await? {
+        return Ok(false);
+    }
+
+    if update_filters {
+        db.query(
+            "UPDATE type::record('airport',$id) SET mct_records = $mct_records, connection_building_filters = $connection_building_filters UNSET mct",
+        )
+        .bind(("id", code.to_string()))
+        .bind(("mct_records", mct_records))
+        .bind(("connection_building_filters", connection_building_filters))
+        .await?;
+    } else {
+        db.query("UPDATE type::record('airport',$id) SET mct_records = $mct_records UNSET mct")
+            .bind(("id", code.to_string()))
+            .bind(("mct_records", mct_records))
+            .await?;
+    }
+
+    Ok(true)
+}
+
+pub async fn clear_all_airport_mct_records(db: &Surreal<Any>) -> surrealdb::Result<()> {
+    db.query("UPDATE airport SET mct_records = [], connection_building_filters = [] UNSET mct")
+        .await?;
+    Ok(())
 }
 
 pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
@@ -75,7 +151,7 @@ pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
 
     loop {
         let sql = format!(
-            "SELECT code, timezone, name, city, country, location, mct FROM airport START {} LIMIT {}",
+            "SELECT code, timezone, name, city, country, state, location, mct, connection_building_filters, mct_records FROM airport START {} LIMIT {}",
             start, batch_size
         );
         let batch_started = Instant::now();
@@ -165,15 +241,27 @@ fn map_airport_row(record: Value) -> Option<AirportRow> {
         Some(Value::None | Value::Null) | None => None,
         _ => None,
     };
+    let state = match object.get("state") {
+        Some(Value::String(state)) => Some(state.clone()),
+        Some(Value::None | Value::Null) | None => None,
+        _ => None,
+    };
     let (longitude, latitude) = match object.get("location") {
         Some(Value::Geometry(Geometry::Point(point))) => (point.x(), point.y()),
         _ => return None,
     };
-    let mct = match object.get("mct") {
+    let legacy_mct = match object.get("mct") {
         Some(Value::Number(number)) => number.to_int().and_then(|value| u32::try_from(value).ok()),
         Some(Value::None | Value::Null) | None => None,
         _ => None,
     };
+    let mct_records = ensure_airport_default_mct_records(
+        object
+            .get("mct_records")
+            .map(parse_mct_records)
+            .unwrap_or_default(),
+        legacy_mct,
+    );
 
     Some(AirportRow {
         code: AirportCodeRow { code },
@@ -181,8 +269,29 @@ fn map_airport_row(record: Value) -> Option<AirportRow> {
         name,
         city,
         country,
+        state,
         latitude,
         longitude,
-        mct,
+        mct_records,
+        connection_building_filters: object
+            .get("connection_building_filters")
+            .map(parse_connection_building_filters)
+            .unwrap_or_default(),
     })
+}
+
+fn parse_mct_records(value: &Value) -> Vec<AirportMctRecord> {
+    let Ok(json_value) = serde_json::to_value(value) else {
+        return Vec::new();
+    };
+
+    serde_json::from_value(json_value).unwrap_or_default()
+}
+
+fn parse_connection_building_filters(value: &Value) -> Vec<ConnectionBuildingFilter> {
+    let Ok(json_value) = serde_json::to_value(value) else {
+        return Vec::new();
+    };
+
+    serde_json::from_value(json_value).unwrap_or_default()
 }

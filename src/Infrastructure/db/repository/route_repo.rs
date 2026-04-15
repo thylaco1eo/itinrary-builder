@@ -10,7 +10,6 @@ pub struct Segment {
     pub companies: Vec<String>,
     pub flights: Vec<String>,
     pub distance: f64,
-    pub mct: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -59,8 +58,7 @@ pub async fn find_paths(
                     to: $pair[1],
                     companies: $route_info.companies,
                     flights: $route_info.flights,
-                    distance: geo::distance($loc_a.location, $loc_b.location),
-                    mct: loc_b.mct
+                    distance: geo::distance($loc_a.location, $loc_b.location)
                 }};
             }});
             LET $total_dist = math::sum(array::map($segments, |$s| $s.distance));

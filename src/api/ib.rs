@@ -9,9 +9,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use surrealdb_types::{RecordId, RecordIdKey};
 
-use crate::domain::airport::AirportCode;
+use crate::domain::airport::{Airport, AirportCode};
 use crate::domain::flight::Flightcore;
 use crate::domain::itinerary::Itinerary;
+use crate::domain::mct::{AirportMctRecord, DEFAULT_AIRPORT_MCT_MINUTES};
 use crate::memory::core::{flight_storage_key, WebData};
 use crate::runtime_paths;
 use crate::Infrastructure::db::model::flight_row::FlightDesignatorRow;
@@ -19,8 +20,41 @@ use crate::Infrastructure::db::repository::route_repo::{self, PathResult, Segmen
 
 const DEFAULT_MAX_TRANSPORTS: u8 = 0;
 const MAX_CIRCUITY: f64 = 2.0;
-const DEFAULT_MCT_MINUTES: i64 = 180;
+const DEFAULT_MCT_MINUTES: i64 = DEFAULT_AIRPORT_MCT_MINUTES as i64;
 const MAX_CONNECTION_WINDOW_HOURS: i64 = 24;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EffectiveMctSource {
+    StructuredRecord,
+    DefaultConstant,
+}
+
+#[derive(Clone, Debug)]
+struct EffectiveMct {
+    minutes: i64,
+    source: EffectiveMctSource,
+    rule_description: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum MctFieldPriority {
+    Station = 1,
+    Aircraft = 2,
+    Terminal = 3,
+    FlightNumber = 4,
+    Airline = 5,
+    PreviousNextStation = 6,
+    PreviousNextCountryState = 7,
+    PreviousNextRegion = 8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MctSpecificity {
+    highest_priority: u8,
+    priority_count: usize,
+    field_count: usize,
+    station_pair_count: usize,
+}
 
 #[derive(Serialize)]
 struct FlightDesignatorResponse {
@@ -179,8 +213,9 @@ pub async fn get_ib(
         }),
     );
 
-    let origin_loaded = data.airports().contains_key(&origin);
-    let destination_loaded = data.airports().contains_key(&destination);
+    let airport_cache = data.airports();
+    let origin_loaded = airport_cache.contains_key(&origin);
+    let destination_loaded = airport_cache.contains_key(&destination);
     if !origin_loaded || !destination_loaded {
         request_warn(
             &request_trace,
@@ -281,8 +316,14 @@ pub async fn get_ib(
             continue;
         };
 
-        let combinations =
-            build_itineraries_for_path(path, &flights, dep_date, &request_trace, path_index + 1);
+        let combinations = build_itineraries_for_path(
+            path,
+            &flights,
+            &airport_cache,
+            dep_date,
+            &request_trace,
+            path_index + 1,
+        );
         for combination in combinations {
             let expanded_segments = expand_itinerary_segments(&combination, &flights);
             let effective_transport_count = transfer_count(&expanded_segments);
@@ -396,6 +437,7 @@ pub async fn get_ib(
 fn build_itineraries_for_path<'a>(
     path: &PathResult,
     flights: &'a HashMap<String, Flightcore>,
+    airports: &HashMap<String, Airport>,
     dep_date: NaiveDate,
     request_trace: &str,
     path_index: usize,
@@ -415,6 +457,7 @@ fn build_itineraries_for_path<'a>(
     build_combinations(
         path,
         flights,
+        airports,
         dep_date,
         0,
         &mut current,
@@ -436,6 +479,7 @@ fn build_itineraries_for_path<'a>(
 fn build_combinations<'a>(
     path: &PathResult,
     flights: &'a HashMap<String, Flightcore>,
+    airports: &HashMap<String, Airport>,
     dep_date: NaiveDate,
     segment_index: usize,
     current: &mut Vec<&'a Flightcore>,
@@ -462,6 +506,7 @@ fn build_combinations<'a>(
         path,
         segment,
         flights,
+        airports,
         dep_date,
         current,
         segment_index,
@@ -508,7 +553,7 @@ fn build_combinations<'a>(
             }),
         );
 
-        match validate_connection(path, segment_index, current, flight) {
+        match validate_connection(path, airports, segment_index, current, flight) {
             Ok(()) => {
                 request_info(
                     request_trace,
@@ -524,6 +569,7 @@ fn build_combinations<'a>(
                 build_combinations(
                     path,
                     flights,
+                    airports,
                     dep_date,
                     segment_index + 1,
                     current,
@@ -554,6 +600,7 @@ fn collect_segment_candidates<'a>(
     path: &PathResult,
     segment: &Segment,
     flights: &'a HashMap<String, Flightcore>,
+    airports: &HashMap<String, Airport>,
     dep_date: NaiveDate,
     current: &[&'a Flightcore],
     segment_index: usize,
@@ -564,7 +611,7 @@ fn collect_segment_candidates<'a>(
     let from = record_id_code(&segment.from)?;
     let to = record_id_code(&segment.to)?;
     let route_flights = segment.flights.clone();
-    let lookup_dates = lookup_dates_for_segment(path, current, dep_date, segment_index);
+    let lookup_dates = lookup_dates_for_segment(current, dep_date, segment_index);
     let lookup_keys = lookup_keys_for_segment(&route_flights, &from, &to, &lookup_dates);
     let hits = lookup_keys
         .iter()
@@ -582,8 +629,7 @@ fn collect_segment_candidates<'a>(
             "to": to,
             "route_flights": route_flights,
             "companies": segment.companies,
-            "mct_minutes": segment.mct,
-            "effective_mct_minutes": segment.mct.unwrap_or(DEFAULT_MCT_MINUTES)
+            "mct_strategy": "candidate_specific_mct_record_evaluation"
         }),
     );
     request_info(
@@ -598,7 +644,7 @@ fn collect_segment_candidates<'a>(
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
             "current_chain": flight_chain_json(current),
-            "window": connection_window_json(path, current, segment_index)
+            "window": connection_window_json(current, segment_index)
         }),
     );
     request_info(
@@ -633,7 +679,9 @@ fn collect_segment_candidates<'a>(
     let candidates = hits
         .into_iter()
         .map(|(_, flight)| flight)
-        .filter(|flight| validate_connection(path, segment_index, current, flight).is_ok())
+        .filter(|flight| {
+            validate_connection(path, airports, segment_index, current, flight).is_ok()
+        })
         .collect::<Vec<_>>();
 
     request_info(
@@ -651,7 +699,6 @@ fn collect_segment_candidates<'a>(
 }
 
 fn lookup_dates_for_segment(
-    path: &PathResult,
     current: &[&Flightcore],
     dep_date: NaiveDate,
     segment_index: usize,
@@ -660,8 +707,8 @@ fn lookup_dates_for_segment(
         return vec![dep_date];
     }
 
-    let (earliest_departure, latest_departure, _) =
-        connection_bounds(path, segment_index, current).unwrap();
+    let (earliest_departure, latest_departure) =
+        connection_search_window(current, segment_index).unwrap();
     let mut dates = Vec::new();
     let mut date = earliest_departure.date_naive();
     let latest_date = latest_departure.date_naive();
@@ -695,7 +742,8 @@ fn lookup_keys_for_segment(
 }
 
 fn validate_connection(
-    path: &PathResult,
+    _path: &PathResult,
+    airports: &HashMap<String, Airport>,
     segment_index: usize,
     current: &[&Flightcore],
     next_flight: &Flightcore,
@@ -713,16 +761,18 @@ fn validate_connection(
         ));
     }
 
-    let (earliest_departure, latest_departure, minimum_connection_minutes) =
-        connection_bounds(path, segment_index, current).unwrap();
+    let (earliest_departure, latest_departure, effective_mct) =
+        connection_bounds(airports, segment_index, current, next_flight).unwrap();
 
     if next_flight.dep_local() < &earliest_departure {
         return Err(format!(
-            "departure {} is earlier than minimum connection {} after previous flight {} with mct={}m",
+            "departure {} is earlier than minimum connection {} after previous flight {} with mct={}m [{}: {}]",
             next_flight.dep_local().to_rfc3339(),
             earliest_departure.to_rfc3339(),
             format_flight(previous_flight),
-            minimum_connection_minutes
+            effective_mct.minutes,
+            effective_mct_source_label(effective_mct.source),
+            effective_mct.rule_description
         ));
     }
 
@@ -924,34 +974,561 @@ fn connection_minutes(previous: &Flightcore, next: &Flightcore) -> u32 {
         .max(0) as u32
 }
 
-fn connection_bounds(
-    path: &PathResult,
-    segment_index: usize,
+fn connection_search_window(
     current: &[&Flightcore],
+    segment_index: usize,
 ) -> Option<(
     chrono::DateTime<chrono_tz::Tz>,
     chrono::DateTime<chrono_tz::Tz>,
-    i64,
 )> {
     if segment_index == 0 {
         return None;
     }
 
     let previous_flight = current.get(segment_index - 1)?;
-    let minimum_connection_minutes = path.segments[segment_index - 1]
-        .mct
-        .unwrap_or(DEFAULT_MCT_MINUTES)
-        .max(0);
-    let earliest_departure =
-        previous_flight.arr_local().clone() + Duration::minutes(minimum_connection_minutes);
+    let earliest_departure = previous_flight.arr_local().clone();
     let latest_departure =
         previous_flight.arr_local().clone() + Duration::hours(MAX_CONNECTION_WINDOW_HOURS);
 
-    Some((
-        earliest_departure,
-        latest_departure,
-        minimum_connection_minutes,
-    ))
+    Some((earliest_departure, latest_departure))
+}
+
+fn connection_bounds(
+    airports: &HashMap<String, Airport>,
+    segment_index: usize,
+    current: &[&Flightcore],
+    next_flight: &Flightcore,
+) -> Option<(
+    chrono::DateTime<chrono_tz::Tz>,
+    chrono::DateTime<chrono_tz::Tz>,
+    EffectiveMct,
+)> {
+    if segment_index == 0 {
+        return None;
+    }
+
+    let previous_flight = current.get(segment_index - 1)?;
+    let effective_mct = resolve_effective_mct(airports, previous_flight, next_flight);
+    let earliest_departure =
+        previous_flight.arr_local().clone() + Duration::minutes(effective_mct.minutes);
+    let latest_departure =
+        previous_flight.arr_local().clone() + Duration::hours(MAX_CONNECTION_WINDOW_HOURS);
+
+    Some((earliest_departure, latest_departure, effective_mct))
+}
+
+fn resolve_effective_mct(
+    airports: &HashMap<String, Airport>,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> EffectiveMct {
+    let candidate_airports = candidate_transfer_airports(airports, previous_flight, next_flight);
+    let status = determine_connection_status(airports, previous_flight, next_flight);
+    let connection_building_filters = candidate_airports
+        .iter()
+        .flat_map(|airport| airport.connection_building_filters().iter())
+        .collect::<Vec<_>>();
+
+    if let Some(status) = status.as_deref() {
+        let mut matching_records = candidate_airports
+            .iter()
+            .flat_map(|airport| airport.mct_records().iter())
+            .filter(|record| {
+                matches_mct_record(
+                    record,
+                    airports,
+                    previous_flight,
+                    next_flight,
+                    status,
+                    &connection_building_filters,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        matching_records.sort_by(|left, right| {
+            mct_specificity(right)
+                .cmp(&mct_specificity(left))
+                .then_with(|| right.suppression_indicator.cmp(&left.suppression_indicator))
+        });
+
+        let suppression_records = matching_records
+            .iter()
+            .copied()
+            .filter(|record| record.suppression_indicator)
+            .collect::<Vec<_>>();
+
+        for record in matching_records {
+            if record.suppression_indicator {
+                continue;
+            }
+            if suppression_records.iter().any(|suppression| {
+                suppression_applies_to_record(suppression, record)
+            }) {
+                continue;
+            }
+            if let Some(minutes) = parse_mct_minutes(record.time.as_deref()) {
+                return EffectiveMct {
+                    minutes,
+                    source: EffectiveMctSource::StructuredRecord,
+                    rule_description: format!("matched {}", describe_mct_record(record)),
+                };
+            }
+        }
+    }
+
+    EffectiveMct {
+        minutes: DEFAULT_MCT_MINUTES,
+        source: EffectiveMctSource::DefaultConstant,
+        rule_description: format!("default {}m fallback", DEFAULT_MCT_MINUTES),
+    }
+}
+
+fn candidate_transfer_airports<'a>(
+    airports: &'a HashMap<String, Airport>,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> Vec<&'a Airport> {
+    let mut result = Vec::new();
+
+    if let Some(arrival_airport) = airports.get(previous_flight.destination().as_str()) {
+        result.push(arrival_airport);
+    }
+
+    if previous_flight.destination().as_str() != next_flight.origin().as_str() {
+        if let Some(departure_airport) = airports.get(next_flight.origin().as_str()) {
+            result.push(departure_airport);
+        }
+    }
+
+    result
+}
+
+fn determine_connection_status(
+    airports: &HashMap<String, Airport>,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> Option<String> {
+    let inbound = leg_status(
+        airports,
+        previous_flight.origin().as_str(),
+        previous_flight.destination().as_str(),
+    )?;
+    let outbound = leg_status(
+        airports,
+        next_flight.origin().as_str(),
+        next_flight.destination().as_str(),
+    )?;
+    Some(format!("{inbound}{outbound}"))
+}
+
+fn leg_status(
+    airports: &HashMap<String, Airport>,
+    origin: &str,
+    destination: &str,
+) -> Option<char> {
+    let origin_country = airports.get(origin)?.country()?;
+    let destination_country = airports.get(destination)?.country()?;
+    Some(if origin_country == destination_country {
+        'D'
+    } else {
+        'I'
+    })
+}
+
+fn matches_mct_record(
+    record: &AirportMctRecord,
+    airports: &HashMap<String, Airport>,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+    status: &str,
+    connection_building_filters: &[&crate::domain::mct::ConnectionBuildingFilter],
+) -> bool {
+    record.status == status
+        && matches_station_scope(record, previous_flight, next_flight)
+        && matches_previous_next_scope(record, airports, previous_flight, next_flight)
+        && matches_carrier_scope(record, previous_flight, next_flight)
+        && matches_flight_number_scope(record, previous_flight, next_flight)
+        && matches_terminal_scope(record, previous_flight, next_flight)
+        && matches_aircraft_scope(record)
+        && matches_effective_dates(record, next_flight)
+        && matches_suppression_scope(record)
+        && matches_connection_building_filter(
+            record,
+            previous_flight,
+            next_flight,
+            connection_building_filters,
+        )
+}
+
+fn matches_station_scope(
+    record: &AirportMctRecord,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> bool {
+    record
+        .arrival_station
+        .as_deref()
+        .is_none_or(|station| station == previous_flight.destination().as_str())
+        && record
+            .departure_station
+            .as_deref()
+            .is_none_or(|station| station == next_flight.origin().as_str())
+}
+
+fn matches_previous_next_scope(
+    record: &AirportMctRecord,
+    airports: &HashMap<String, Airport>,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> bool {
+    if record.previous_region.is_some() || record.next_region.is_some() {
+        return false;
+    }
+
+    record
+        .previous_station
+        .as_deref()
+        .is_none_or(|station| station == previous_flight.origin().as_str())
+        && record
+            .next_station
+            .as_deref()
+            .is_none_or(|station| station == next_flight.destination().as_str())
+        && record.previous_country.as_deref().is_none_or(|country| {
+            airports
+                .get(previous_flight.origin().as_str())
+                .and_then(|airport| airport.country())
+                == Some(country)
+        })
+        && record.previous_state.as_deref().is_none_or(|state| {
+            airports
+                .get(previous_flight.origin().as_str())
+                .and_then(|airport| airport.state())
+                == Some(state)
+        })
+        && record.next_country.as_deref().is_none_or(|country| {
+            airports
+                .get(next_flight.destination().as_str())
+                .and_then(|airport| airport.country())
+                == Some(country)
+        })
+        && record.next_state.as_deref().is_none_or(|state| {
+            airports
+                .get(next_flight.destination().as_str())
+                .and_then(|airport| airport.state())
+                == Some(state)
+        })
+}
+
+fn matches_carrier_scope(
+    record: &AirportMctRecord,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> bool {
+    matches_flight_carrier_scope(
+        previous_flight,
+        record.arrival_carrier.as_deref(),
+        record.arrival_codeshare_indicator,
+        record.arrival_codeshare_operating_carrier.as_deref(),
+    ) && matches_flight_carrier_scope(
+        next_flight,
+        record.departure_carrier.as_deref(),
+        record.departure_codeshare_indicator,
+        record.departure_codeshare_operating_carrier.as_deref(),
+    )
+}
+
+fn matches_flight_carrier_scope(
+    flight: &Flightcore,
+    marketing_carrier: Option<&str>,
+    codeshare_indicator: bool,
+    operating_carrier: Option<&str>,
+) -> bool {
+    if let Some(marketing_carrier) = marketing_carrier {
+        if flight.company() != marketing_carrier {
+            return false;
+        }
+        if !codeshare_indicator && operating_carrier.is_none() && is_codeshare_flight(flight) {
+            return false;
+        }
+    } else if codeshare_indicator && !is_codeshare_flight(flight) {
+        return false;
+    }
+
+    operating_carrier.is_none_or(|carrier| {
+        is_codeshare_flight(flight) && flight.operating_designator().company == carrier
+    })
+}
+
+fn is_codeshare_flight(flight: &Flightcore) -> bool {
+    flight.company() != flight.operating_designator().company
+        || flight.flight_id() != flight.operating_designator().flight_number
+}
+
+fn matches_flight_number_scope(
+    record: &AirportMctRecord,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> bool {
+    matches_flight_number_range(
+        previous_flight.flight_id(),
+        record.arrival_flight_number_range_start.as_deref(),
+        record.arrival_flight_number_range_end.as_deref(),
+    ) && matches_flight_number_range(
+        next_flight.flight_id(),
+        record.departure_flight_number_range_start.as_deref(),
+        record.departure_flight_number_range_end.as_deref(),
+    )
+}
+
+fn matches_flight_number_range(
+    flight_number: &str,
+    start: Option<&str>,
+    end: Option<&str>,
+) -> bool {
+    let (Some(start), Some(end)) = (start, end) else {
+        return true;
+    };
+    let Ok(flight_number) = flight_number.parse::<u32>() else {
+        return false;
+    };
+    let Ok(start) = start.parse::<u32>() else {
+        return false;
+    };
+    let Ok(end) = end.parse::<u32>() else {
+        return false;
+    };
+    (start..=end).contains(&flight_number)
+}
+
+fn matches_terminal_scope(
+    record: &AirportMctRecord,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> bool {
+    record
+        .arrival_terminal
+        .as_deref()
+        .is_none_or(|terminal| previous_flight.arrival_terminal() == Some(terminal))
+        && record
+            .departure_terminal
+            .as_deref()
+            .is_none_or(|terminal| next_flight.departure_terminal() == Some(terminal))
+}
+
+fn matches_aircraft_scope(record: &AirportMctRecord) -> bool {
+    record.arrival_aircraft_type.is_none()
+        && record.arrival_aircraft_body.is_none()
+        && record.departure_aircraft_type.is_none()
+        && record.departure_aircraft_body.is_none()
+}
+
+fn matches_effective_dates(record: &AirportMctRecord, next_flight: &Flightcore) -> bool {
+    let connection_date = next_flight.dep_local().date_naive();
+    record
+        .effective_from_local
+        .as_deref()
+        .is_none_or(|value| parse_effective_date(value).is_some_and(|date| date <= connection_date))
+        && record.effective_to_local.as_deref().is_none_or(|value| {
+            parse_effective_date(value).is_some_and(|date| date >= connection_date)
+        })
+}
+
+fn parse_effective_date(value: &str) -> Option<NaiveDate> {
+    if value.len() != 7 {
+        return None;
+    }
+
+    let month = value[2..5].to_ascii_lowercase();
+    let mut normalized = String::with_capacity(7);
+    normalized.push_str(&value[0..2]);
+    normalized.push_str(&month[..1].to_ascii_uppercase());
+    normalized.push_str(&month[1..]);
+    normalized.push_str(&value[5..7]);
+
+    NaiveDate::parse_from_str(&normalized, "%d%b%y").ok()
+}
+
+fn matches_suppression_scope(record: &AirportMctRecord) -> bool {
+    record.suppression_region.is_none()
+        && record.suppression_country.is_none()
+        && record.suppression_state.is_none()
+}
+
+fn matches_connection_building_filter(
+    record: &AirportMctRecord,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+    connection_building_filters: &[&crate::domain::mct::ConnectionBuildingFilter],
+) -> bool {
+    if !record.requires_connection_building_filter {
+        return true;
+    }
+
+    connection_building_filters.iter().any(|filter| {
+        (filter.submitting_carrier == previous_flight.company()
+            && filter
+                .partner_carrier_codes
+                .iter()
+                .any(|partner| partner == next_flight.company()))
+            || (filter.submitting_carrier == next_flight.company()
+                && filter
+                    .partner_carrier_codes
+                    .iter()
+                    .any(|partner| partner == previous_flight.company()))
+    })
+}
+
+fn suppression_applies_to_record(
+    suppression_record: &AirportMctRecord,
+    candidate_record: &AirportMctRecord,
+) -> bool {
+    suppression_record.arrival_station == candidate_record.arrival_station
+        && suppression_record.status == candidate_record.status
+        && suppression_record.departure_station == candidate_record.departure_station
+        && suppression_record.requires_connection_building_filter
+            == candidate_record.requires_connection_building_filter
+        && suppression_record.arrival_carrier == candidate_record.arrival_carrier
+        && suppression_record.arrival_codeshare_indicator
+            == candidate_record.arrival_codeshare_indicator
+        && suppression_record.arrival_codeshare_operating_carrier
+            == candidate_record.arrival_codeshare_operating_carrier
+        && suppression_record.departure_carrier == candidate_record.departure_carrier
+        && suppression_record.departure_codeshare_indicator
+            == candidate_record.departure_codeshare_indicator
+        && suppression_record.departure_codeshare_operating_carrier
+            == candidate_record.departure_codeshare_operating_carrier
+        && suppression_record.arrival_aircraft_type == candidate_record.arrival_aircraft_type
+        && suppression_record.arrival_aircraft_body == candidate_record.arrival_aircraft_body
+        && suppression_record.departure_aircraft_type == candidate_record.departure_aircraft_type
+        && suppression_record.departure_aircraft_body == candidate_record.departure_aircraft_body
+        && suppression_record.arrival_terminal == candidate_record.arrival_terminal
+        && suppression_record.departure_terminal == candidate_record.departure_terminal
+        && suppression_record.previous_country == candidate_record.previous_country
+        && suppression_record.previous_station == candidate_record.previous_station
+        && suppression_record.next_country == candidate_record.next_country
+        && suppression_record.next_station == candidate_record.next_station
+        && suppression_record.arrival_flight_number_range_start
+            == candidate_record.arrival_flight_number_range_start
+        && suppression_record.arrival_flight_number_range_end
+            == candidate_record.arrival_flight_number_range_end
+        && suppression_record.departure_flight_number_range_start
+            == candidate_record.departure_flight_number_range_start
+        && suppression_record.departure_flight_number_range_end
+            == candidate_record.departure_flight_number_range_end
+        && suppression_record.previous_state == candidate_record.previous_state
+        && suppression_record.next_state == candidate_record.next_state
+        && suppression_record.previous_region == candidate_record.previous_region
+        && suppression_record.next_region == candidate_record.next_region
+        && suppression_record.effective_from_local == candidate_record.effective_from_local
+        && suppression_record.effective_to_local == candidate_record.effective_to_local
+}
+
+fn parse_mct_minutes(value: Option<&str>) -> Option<i64> {
+    let value = value?;
+    if value.len() != 4 {
+        return None;
+    }
+
+    let hours = value[0..2].parse::<i64>().ok()?;
+    let minutes = value[2..4].parse::<i64>().ok()?;
+    Some(hours * 60 + minutes)
+}
+
+fn describe_mct_record(record: &AirportMctRecord) -> String {
+    let time = record.time.as_deref().unwrap_or("suppressed");
+    let arrival = record.arrival_station.as_deref().unwrap_or("***");
+    let departure = record.departure_station.as_deref().unwrap_or("***");
+    format!("MCT {} {} {}->{}", record.status, time, arrival, departure)
+}
+
+fn mct_specificity(record: &AirportMctRecord) -> MctSpecificity {
+    let mut priorities = Vec::new();
+
+    if record.arrival_station.is_some() || record.departure_station.is_some() {
+        priorities.push(MctFieldPriority::Station);
+    }
+    if record.arrival_aircraft_type.is_some()
+        || record.arrival_aircraft_body.is_some()
+        || record.departure_aircraft_type.is_some()
+        || record.departure_aircraft_body.is_some()
+    {
+        priorities.push(MctFieldPriority::Aircraft);
+    }
+    if record.arrival_terminal.is_some() || record.departure_terminal.is_some() {
+        priorities.push(MctFieldPriority::Terminal);
+    }
+    if record.arrival_flight_number_range_start.is_some()
+        || record.arrival_flight_number_range_end.is_some()
+        || record.departure_flight_number_range_start.is_some()
+        || record.departure_flight_number_range_end.is_some()
+    {
+        priorities.push(MctFieldPriority::FlightNumber);
+    }
+    if record.arrival_carrier.is_some()
+        || record.departure_carrier.is_some()
+        || record.arrival_codeshare_indicator
+        || record.departure_codeshare_indicator
+        || record.arrival_codeshare_operating_carrier.is_some()
+        || record.departure_codeshare_operating_carrier.is_some()
+        || record.requires_connection_building_filter
+    {
+        priorities.push(MctFieldPriority::Airline);
+    }
+    if record.previous_station.is_some() || record.next_station.is_some() {
+        priorities.push(MctFieldPriority::PreviousNextStation);
+    }
+    if record.previous_country.is_some()
+        || record.next_country.is_some()
+        || record.previous_state.is_some()
+        || record.next_state.is_some()
+    {
+        priorities.push(MctFieldPriority::PreviousNextCountryState);
+    }
+    if record.previous_region.is_some() || record.next_region.is_some() {
+        priorities.push(MctFieldPriority::PreviousNextRegion);
+    }
+
+    let field_count = usize::from(record.arrival_station.is_some())
+        + usize::from(record.departure_station.is_some())
+        + usize::from(record.requires_connection_building_filter)
+        + usize::from(record.arrival_carrier.is_some())
+        + usize::from(record.arrival_codeshare_indicator)
+        + usize::from(record.arrival_codeshare_operating_carrier.is_some())
+        + usize::from(record.departure_carrier.is_some())
+        + usize::from(record.departure_codeshare_indicator)
+        + usize::from(record.departure_codeshare_operating_carrier.is_some())
+        + usize::from(record.arrival_aircraft_type.is_some())
+        + usize::from(record.arrival_aircraft_body.is_some())
+        + usize::from(record.departure_aircraft_type.is_some())
+        + usize::from(record.departure_aircraft_body.is_some())
+        + usize::from(record.arrival_terminal.is_some())
+        + usize::from(record.departure_terminal.is_some())
+        + usize::from(record.previous_country.is_some())
+        + usize::from(record.previous_station.is_some())
+        + usize::from(record.next_country.is_some())
+        + usize::from(record.next_station.is_some())
+        + usize::from(record.arrival_flight_number_range_start.is_some())
+        + usize::from(record.arrival_flight_number_range_end.is_some())
+        + usize::from(record.departure_flight_number_range_start.is_some())
+        + usize::from(record.departure_flight_number_range_end.is_some())
+        + usize::from(record.previous_state.is_some())
+        + usize::from(record.next_state.is_some())
+        + usize::from(record.previous_region.is_some())
+        + usize::from(record.next_region.is_some())
+        + usize::from(record.effective_from_local.is_some())
+        + usize::from(record.effective_to_local.is_some());
+
+    MctSpecificity {
+        highest_priority: priorities
+            .iter()
+            .map(|priority| *priority as u8)
+            .max()
+            .unwrap_or(0),
+        priority_count: priorities.len(),
+        field_count,
+        station_pair_count: usize::from(record.arrival_station.is_some())
+            + usize::from(record.departure_station.is_some()),
+    }
 }
 
 fn log_route_result(request_trace: &str, path_index: usize, path: &PathResult) {
@@ -974,8 +1551,7 @@ fn log_route_result(request_trace: &str, path_index: usize, path: &PathResult) {
                         "to": record_id_code(&segment.to),
                         "flights": segment.flights,
                         "companies": segment.companies,
-                        "mct_minutes": segment.mct,
-                        "effective_mct_minutes": segment.mct.unwrap_or(DEFAULT_MCT_MINUTES),
+                        "mct_strategy": "candidate_specific_mct_record_evaluation",
                         "distance": segment.distance
                     })
                 })
@@ -1085,11 +1661,7 @@ fn flight_designator_response(designator: &FlightDesignatorRow) -> FlightDesigna
     }
 }
 
-fn connection_window_json(
-    path: &PathResult,
-    current: &[&Flightcore],
-    segment_index: usize,
-) -> Value {
+fn connection_window_json(current: &[&Flightcore], segment_index: usize) -> Value {
     if segment_index == 0 {
         return json!({
             "mode": "requested_departure_date_only"
@@ -1097,16 +1669,23 @@ fn connection_window_json(
     }
 
     let previous_flight = current[segment_index - 1];
-    let (earliest_departure, latest_departure, minimum_connection_minutes) =
-        connection_bounds(path, segment_index, current).unwrap();
+    let (earliest_departure, latest_departure) =
+        connection_search_window(current, segment_index).unwrap();
 
     json!({
-        "mode": "previous_arrival_window",
+        "mode": "previous_arrival_lookup_window",
         "previous_flight": flight_json(previous_flight),
-        "minimum_connection_minutes": minimum_connection_minutes,
+        "minimum_connection_minutes": "evaluated_per_candidate",
         "earliest_departure": earliest_departure.to_rfc3339(),
         "latest_departure": latest_departure.to_rfc3339()
     })
+}
+
+fn effective_mct_source_label(source: EffectiveMctSource) -> &'static str {
+    match source {
+        EffectiveMctSource::StructuredRecord => "mct_records",
+        EffectiveMctSource::DefaultConstant => "default",
+    }
 }
 
 fn format_flight(flight: &Flightcore) -> String {
@@ -1172,8 +1751,11 @@ fn max_hops_for_transport_limit(transport: u8) -> Result<u8, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::airport::AirportCode;
+    use crate::domain::airport::{Airport, AirportCode};
     use crate::domain::flight::Flightcore;
+    use crate::domain::mct::{
+        AirportMctRecord, ConnectionBuildingFilter, airport_default_mct_records,
+    };
     use chrono::TimeZone;
     use std::collections::HashMap;
 
@@ -1277,6 +1859,241 @@ mod tests {
         );
     }
 
+    #[test]
+    fn structured_mct_record_overrides_baseline_airport_default() {
+        let mut fra_records = airport_default_mct_records(180);
+        fra_records.push(sample_mct_record("FRA", "FRA", "II", "0130"));
+        let airports = sample_airport_map(fra_records, vec![]);
+        let previous = sample_flight("AA", "100", "JFK", "FRA", 8, 0, Some("T1"), Some("T2"));
+        let next = sample_flight("LH", "400", "FRA", "MAD", 10, 0, Some("T1"), Some("T1"));
+
+        let effective = resolve_effective_mct(&airports, &previous, &next);
+
+        assert_eq!(effective.minutes, 90);
+        assert_eq!(effective.source, EffectiveMctSource::StructuredRecord);
+    }
+
+    #[test]
+    fn connection_building_filter_limits_global_interline_default() {
+        let mut fra_records = airport_default_mct_records(180);
+        fra_records.push(AirportMctRecord {
+                arrival_station: None,
+                time: Some("0400".to_string()),
+                status: "II".to_string(),
+                departure_station: None,
+                requires_connection_building_filter: true,
+                arrival_carrier: None,
+                arrival_codeshare_indicator: false,
+                arrival_codeshare_operating_carrier: None,
+                departure_carrier: None,
+                departure_codeshare_indicator: false,
+                departure_codeshare_operating_carrier: None,
+                arrival_aircraft_type: None,
+                arrival_aircraft_body: None,
+                departure_aircraft_type: None,
+                departure_aircraft_body: None,
+                arrival_terminal: None,
+                departure_terminal: None,
+                previous_country: None,
+                previous_station: None,
+                next_country: None,
+                next_station: None,
+                arrival_flight_number_range_start: None,
+                arrival_flight_number_range_end: None,
+                departure_flight_number_range_start: None,
+                departure_flight_number_range_end: None,
+                previous_state: None,
+                next_state: None,
+                previous_region: None,
+                next_region: None,
+                effective_from_local: None,
+                effective_to_local: None,
+                suppression_indicator: false,
+                suppression_region: None,
+                suppression_country: None,
+                suppression_state: None,
+            });
+        let airports = sample_airport_map(
+            fra_records,
+            vec![ConnectionBuildingFilter {
+                submitting_carrier: "AA".to_string(),
+                partner_carrier_codes: vec!["UA".to_string()],
+            }],
+        );
+        let previous = sample_flight("AA", "100", "JFK", "FRA", 8, 0, None, None);
+        let next_allowed = sample_flight("UA", "900", "FRA", "MAD", 13, 0, None, None);
+        let next_blocked = sample_flight("LH", "400", "FRA", "MAD", 13, 0, None, None);
+
+        let allowed = resolve_effective_mct(&airports, &previous, &next_allowed);
+        let blocked = resolve_effective_mct(&airports, &previous, &next_blocked);
+
+        assert_eq!(allowed.minutes, 240);
+        assert_eq!(allowed.source, EffectiveMctSource::StructuredRecord);
+        assert_eq!(blocked.minutes, 180);
+        assert_eq!(blocked.source, EffectiveMctSource::StructuredRecord);
+    }
+
+    #[test]
+    fn suppression_record_falls_through_to_broader_default() {
+        let mut fra_records = airport_default_mct_records(180);
+        fra_records.extend(vec![
+                sample_mct_record("FRA", "FRA", "II", "0100"),
+                AirportMctRecord {
+                    arrival_station: Some("FRA".to_string()),
+                    time: None,
+                    status: "II".to_string(),
+                    departure_station: Some("FRA".to_string()),
+                    requires_connection_building_filter: false,
+                    arrival_carrier: None,
+                    arrival_codeshare_indicator: false,
+                    arrival_codeshare_operating_carrier: None,
+                    departure_carrier: None,
+                    departure_codeshare_indicator: false,
+                    departure_codeshare_operating_carrier: None,
+                    arrival_aircraft_type: None,
+                    arrival_aircraft_body: None,
+                    departure_aircraft_type: None,
+                    departure_aircraft_body: None,
+                    arrival_terminal: None,
+                    departure_terminal: None,
+                    previous_country: None,
+                    previous_station: None,
+                    next_country: None,
+                    next_station: None,
+                    arrival_flight_number_range_start: None,
+                    arrival_flight_number_range_end: None,
+                    departure_flight_number_range_start: None,
+                    departure_flight_number_range_end: None,
+                    previous_state: None,
+                    next_state: None,
+                    previous_region: None,
+                    next_region: None,
+                    effective_from_local: None,
+                    effective_to_local: None,
+                    suppression_indicator: true,
+                    suppression_region: None,
+                    suppression_country: None,
+                    suppression_state: None,
+                },
+                sample_mct_record("", "", "II", "0130"),
+            ]);
+        let airports = sample_airport_map(fra_records, vec![]);
+        let previous = sample_flight("AA", "100", "JFK", "FRA", 8, 0, None, None);
+        let next = sample_flight("LH", "400", "FRA", "MAD", 10, 0, None, None);
+
+        let effective = resolve_effective_mct(&airports, &previous, &next);
+
+        assert_eq!(effective.minutes, 90);
+        assert_eq!(effective.source, EffectiveMctSource::StructuredRecord);
+    }
+
+    #[test]
+    fn imported_global_default_replaces_baseline_airport_default_scope() {
+        let mut fra_records = airport_default_mct_records(180);
+        let global_imported = sample_mct_record("", "", "II", "0130");
+        if let Some(index) = fra_records
+            .iter()
+            .position(|existing| existing.same_scope_as(&global_imported))
+        {
+            fra_records[index] = global_imported;
+        }
+        let airports = sample_airport_map(fra_records, vec![]);
+        let previous = sample_flight("AA", "100", "JFK", "FRA", 8, 0, None, None);
+        let next = sample_flight("LH", "400", "FRA", "MAD", 10, 0, None, None);
+
+        let effective = resolve_effective_mct(&airports, &previous, &next);
+
+        assert_eq!(effective.minutes, 90);
+        assert_eq!(effective.source, EffectiveMctSource::StructuredRecord);
+    }
+
+    #[test]
+    fn state_scoped_mct_records_match_airport_state_codes() {
+        let airports = HashMap::from([
+            (
+                "HNL".to_string(),
+                sample_airport("HNL", "US", "HI", airport_default_mct_records(180), vec![]),
+            ),
+            (
+                "ITO".to_string(),
+                sample_airport("ITO", "US", "HI", airport_default_mct_records(180), vec![]),
+            ),
+            (
+                "LAX".to_string(),
+                sample_airport("LAX", "US", "CA", airport_default_mct_records(180), vec![]),
+            ),
+        ]);
+        let previous = sample_flight("WN", "101", "ITO", "HNL", 8, 0, None, None);
+        let next_hawaii = sample_flight("WN", "202", "HNL", "ITO", 10, 0, None, None);
+        let next_california = sample_flight("WN", "203", "HNL", "LAX", 10, 0, None, None);
+        let record = AirportMctRecord {
+            arrival_station: Some("HNL".to_string()),
+            time: Some("0035".to_string()),
+            status: "DD".to_string(),
+            departure_station: Some("HNL".to_string()),
+            requires_connection_building_filter: false,
+            arrival_carrier: Some("WN".to_string()),
+            arrival_codeshare_indicator: false,
+            arrival_codeshare_operating_carrier: None,
+            departure_carrier: Some("WN".to_string()),
+            departure_codeshare_indicator: false,
+            departure_codeshare_operating_carrier: None,
+            arrival_aircraft_type: None,
+            arrival_aircraft_body: None,
+            departure_aircraft_type: None,
+            departure_aircraft_body: None,
+            arrival_terminal: None,
+            departure_terminal: None,
+            previous_country: Some("US".to_string()),
+            previous_station: None,
+            next_country: Some("US".to_string()),
+            next_station: None,
+            arrival_flight_number_range_start: None,
+            arrival_flight_number_range_end: None,
+            departure_flight_number_range_start: None,
+            departure_flight_number_range_end: None,
+            previous_state: Some("HI".to_string()),
+            next_state: Some("HI".to_string()),
+            previous_region: None,
+            next_region: None,
+            effective_from_local: None,
+            effective_to_local: None,
+            suppression_indicator: false,
+            suppression_region: None,
+            suppression_country: None,
+            suppression_state: None,
+        };
+        let airports = airports
+            .into_iter()
+            .map(|(code, airport)| {
+                if code == "HNL" {
+                    let mut hnl_records = airport_default_mct_records(180);
+                    hnl_records.push(record.clone());
+                    (
+                        code,
+                        sample_airport("HNL", "US", "HI", hnl_records, vec![]),
+                    )
+                } else {
+                    (code, airport)
+                }
+            })
+            .collect::<HashMap<_, _>>();
+
+        let hawaii_effective = resolve_effective_mct(&airports, &previous, &next_hawaii);
+        let california_effective = resolve_effective_mct(&airports, &previous, &next_california);
+
+        assert_eq!(hawaii_effective.minutes, 35);
+        assert_eq!(
+            hawaii_effective.source,
+            EffectiveMctSource::StructuredRecord
+        );
+        assert_eq!(california_effective.minutes, 180);
+        assert_eq!(
+            california_effective.source,
+            EffectiveMctSource::StructuredRecord
+        );
+    }
+
     fn sample_same_flight_map() -> HashMap<String, Flightcore> {
         let mut flights = HashMap::new();
         let pek_tz = chrono_tz::Asia::Shanghai;
@@ -1374,6 +2191,123 @@ mod tests {
             company: company.to_string(),
             flight_number: flight_id.to_string(),
             operational_suffix: None,
+        }
+    }
+
+    fn sample_airport_map(
+        fra_records: Vec<AirportMctRecord>,
+        fra_filters: Vec<ConnectionBuildingFilter>,
+    ) -> HashMap<String, Airport> {
+        HashMap::from([
+            (
+                "JFK".to_string(),
+                sample_airport("JFK", "US", "NY", airport_default_mct_records(180), vec![]),
+            ),
+            (
+                "FRA".to_string(),
+                sample_airport("FRA", "DE", "HE", fra_records, fra_filters),
+            ),
+            (
+                "MAD".to_string(),
+                sample_airport("MAD", "ES", "MD", airport_default_mct_records(180), vec![]),
+            ),
+        ])
+    }
+
+    fn sample_airport(
+        code: &str,
+        country: &str,
+        state: &str,
+        mct_records: Vec<AirportMctRecord>,
+        connection_building_filters: Vec<ConnectionBuildingFilter>,
+    ) -> Airport {
+        Airport::new_full(
+            AirportCode::new(code).unwrap(),
+            chrono_tz::UTC,
+            Some(code.to_string()),
+            None,
+            Some(country.to_string()),
+            Some(state.to_string()),
+            0.0,
+            0.0,
+            mct_records,
+            connection_building_filters,
+        )
+    }
+
+    fn sample_flight(
+        company: &str,
+        flight_number: &str,
+        origin: &str,
+        destination: &str,
+        dep_hour: u32,
+        arr_hour: u32,
+        departure_terminal: Option<&str>,
+        arrival_terminal: Option<&str>,
+    ) -> Flightcore {
+        let tz = chrono_tz::UTC;
+        Flightcore::new(
+            company.to_string(),
+            flight_number.to_string(),
+            AirportCode::new(origin).unwrap(),
+            AirportCode::new(destination).unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, dep_hour, 0, 0).unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, arr_hour, 0, 0).unwrap(),
+            (arr_hour.saturating_sub(dep_hour)) * 60,
+            departure_terminal.map(ToOwned::to_owned),
+            arrival_terminal.map(ToOwned::to_owned),
+            sample_designator(company, flight_number),
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+        )
+    }
+
+    fn sample_mct_record(
+        arrival_station: &str,
+        departure_station: &str,
+        status: &str,
+        time: &str,
+    ) -> AirportMctRecord {
+        AirportMctRecord {
+            arrival_station: (!arrival_station.is_empty()).then(|| arrival_station.to_string()),
+            time: Some(time.to_string()),
+            status: status.to_string(),
+            departure_station: (!departure_station.is_empty())
+                .then(|| departure_station.to_string()),
+            requires_connection_building_filter: false,
+            arrival_carrier: None,
+            arrival_codeshare_indicator: false,
+            arrival_codeshare_operating_carrier: None,
+            departure_carrier: None,
+            departure_codeshare_indicator: false,
+            departure_codeshare_operating_carrier: None,
+            arrival_aircraft_type: None,
+            arrival_aircraft_body: None,
+            departure_aircraft_type: None,
+            departure_aircraft_body: None,
+            arrival_terminal: None,
+            departure_terminal: None,
+            previous_country: None,
+            previous_station: None,
+            next_country: None,
+            next_station: None,
+            arrival_flight_number_range_start: None,
+            arrival_flight_number_range_end: None,
+            departure_flight_number_range_start: None,
+            departure_flight_number_range_end: None,
+            previous_state: None,
+            next_state: None,
+            previous_region: None,
+            next_region: None,
+            effective_from_local: None,
+            effective_to_local: None,
+            suppression_indicator: false,
+            suppression_region: None,
+            suppression_country: None,
+            suppression_state: None,
         }
     }
 }

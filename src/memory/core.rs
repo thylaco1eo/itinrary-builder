@@ -1,5 +1,6 @@
 use crate::domain::airport::{Airport, AirportCode};
 use crate::domain::flight::Flightcore;
+use crate::Infrastructure::db::model::airport_row::{AirportRow, AirportRowError};
 use crate::Infrastructure::db::model::flight_row::{FlightCacheRow, FlightRow};
 use crate::Infrastructure::db::repository::airport_repo::get_all_airports;
 use crate::Infrastructure::db::repository::flight_repo::get_flights;
@@ -12,7 +13,7 @@ use surrealdb::{engine::any, Surreal};
 pub struct WebData {
     database: Surreal<any::Any>,
     flights: RwLock<HashMap<String, Flightcore>>,
-    airports: HashMap<String, Airport>,
+    airports: RwLock<HashMap<String, Airport>>,
 }
 
 #[derive(Debug, Default)]
@@ -26,24 +27,11 @@ impl WebData {
     pub async fn new(data_base: Surreal<any::Any>) -> Self {
         println!("Loading airports into memory...");
         let mut flights = HashMap::new();
-        let mut airports = HashMap::new();
-
         let airport_rows = get_all_airports(&data_base).await;
         let source_airport_rows = airport_rows.len();
         let airport_row_buffer_bytes =
             estimate_airport_row_vec_bytes(&airport_rows, airport_rows.capacity());
-        let mut rejected_airports = 0usize;
-        for row in airport_rows {
-            let code = row.code.code.clone();
-            match Airport::try_from(row) {
-                Ok(airport) => {
-                    airports.insert(code, airport);
-                }
-                Err(_) => {
-                    rejected_airports += 1;
-                }
-            }
-        }
+        let (airports, rejected_airports) = build_airport_map(airport_rows);
         println!(
             "Loaded {} airports into memory from {} source rows ({} rejected).",
             airports.len(),
@@ -111,7 +99,7 @@ impl WebData {
         WebData {
             database: data_base,
             flights: RwLock::new(flights),
-            airports,
+            airports: RwLock::new(airports),
         }
     }
 
@@ -123,16 +111,36 @@ impl WebData {
         self.flights.read().unwrap()
     }
 
-    pub fn airports(&self) -> &HashMap<String, Airport> {
-        &self.airports
+    pub fn airports(&self) -> RwLockReadGuard<'_, HashMap<String, Airport>> {
+        self.airports.read().unwrap()
+    }
+
+    pub fn upsert_airport(&self, row: AirportRow) -> Result<(), AirportRowError> {
+        let code = row.code.code.clone();
+        let airport = Airport::try_from(row)?;
+        self.airports.write().unwrap().insert(code, airport);
+        Ok(())
+    }
+
+    pub async fn reload_airports(&self) -> usize {
+        let airport_rows = get_all_airports(&self.database).await;
+        let (airports, rejected_airports) = build_airport_map(airport_rows);
+        let airport_count = airports.len();
+        println!(
+            "Reloaded {} airports into memory ({} rejected).",
+            airport_count, rejected_airports
+        );
+        *self.airports.write().unwrap() = airports;
+        airport_count
     }
 
     pub fn upsert_flights(&self, rows: Vec<FlightRow>) -> FlightCacheUpdateSummary {
+        let airports = self.airports.read().unwrap();
         let mut flights = self.flights.write().unwrap();
         let mut summary = FlightCacheUpdateSummary::default();
 
         for row in rows {
-            match build_flight_entry(row, &self.airports) {
+            match build_flight_entry(row, &airports) {
                 FlightRowLoadResult::Ready { key, flight } => {
                     if flights.insert(key, flight).is_some() {
                         summary.overwritten += 1;
@@ -148,6 +156,25 @@ impl WebData {
 
         summary
     }
+}
+
+fn build_airport_map(rows: Vec<AirportRow>) -> (HashMap<String, Airport>, usize) {
+    let mut airports = HashMap::new();
+    let mut rejected_airports = 0usize;
+
+    for row in rows {
+        let code = row.code.code.clone();
+        match Airport::try_from(row) {
+            Ok(airport) => {
+                airports.insert(code, airport);
+            }
+            Err(_) => {
+                rejected_airports += 1;
+            }
+        }
+    }
+
+    (airports, rejected_airports)
 }
 
 pub fn flight_storage_key(
@@ -255,6 +282,7 @@ fn estimate_airport_row_vec_bytes(
                     + row.name.as_ref().map_or(0, |value| value.capacity())
                     + row.city.as_ref().map_or(0, |value| value.capacity())
                     + row.country.as_ref().map_or(0, |value| value.capacity())
+                    + row.state.as_ref().map_or(0, |value| value.capacity())
             })
             .sum::<usize>()
 }
@@ -284,6 +312,7 @@ fn estimate_airport_map_bytes(airports: &HashMap<String, Airport>) -> usize {
                     + airport.name().map_or(0, str::len)
                     + airport.city().map_or(0, str::len)
                     + airport.country().map_or(0, str::len)
+                    + airport.state().map_or(0, str::len)
             })
             .sum::<usize>()
 }
