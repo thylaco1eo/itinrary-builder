@@ -85,8 +85,8 @@ impl TryFrom<AirportRow> for Airport {
             row.city,
             row.country,
             row.state,
-            row.latitude,
             row.longitude,
+            row.latitude,
             mct_records,
             row.connection_building_filters,
         ))

@@ -1,3 +1,4 @@
+use std::env;
 use std::time::{Duration, Instant};
 
 use crate::domain::mct::{
@@ -9,6 +10,10 @@ use geo::Point;
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 use surrealdb_types::{Geometry, Value};
+
+const DEFAULT_AIRPORT_PRELOAD_BATCH_SIZE: usize = 100;
+const DEFAULT_AIRPORT_PRELOAD_MIN_BATCH_SIZE: usize = 25;
+const DEFAULT_AIRPORT_PRELOAD_TIMEOUT_SECS: u64 = 30;
 
 pub async fn check_airport_exists(
     db: &Surreal<Any>,
@@ -117,6 +122,7 @@ pub async fn clear_all_airport_mct_records(db: &Surreal<Any>) -> surrealdb::Resu
 
 pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
     println!("Querying airports from SurrealDB...");
+    let batch_timeout_secs = airport_preload_timeout_secs();
     let probe_started = Instant::now();
     match timeout(
         Duration::from_secs(10),
@@ -147,7 +153,13 @@ pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
     let started = Instant::now();
     let mut airports = Vec::new();
     let mut start = 0usize;
-    let batch_size = 5_000usize;
+    let mut batch_size = airport_preload_batch_size();
+    let min_batch_size = airport_preload_min_batch_size(batch_size);
+
+    println!(
+        "Airport preload settings: batch_size = {}, min_batch_size = {}, timeout = {}s.",
+        batch_size, min_batch_size, batch_timeout_secs
+    );
 
     loop {
         let sql = format!(
@@ -155,7 +167,7 @@ pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
             start, batch_size
         );
         let batch_started = Instant::now();
-        let mut response = match timeout(Duration::from_secs(30), db.query(&sql)).await {
+        let mut response = match timeout(Duration::from_secs(batch_timeout_secs), db.query(&sql)).await {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 eprintln!(
@@ -167,9 +179,19 @@ pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
                 break;
             }
             Err(_) => {
+                if batch_size > min_batch_size {
+                    let next_batch_size = (batch_size / 2).max(min_batch_size);
+                    eprintln!(
+                        "Airport batch query timed out at offset {} after {}s with batch size {}. Retrying with batch size {}.",
+                        start, batch_timeout_secs, batch_size, next_batch_size
+                    );
+                    batch_size = next_batch_size;
+                    continue;
+                }
+
                 eprintln!(
-                    "Airport batch query timed out at offset {} after 30s.",
-                    start
+                    "Airport batch query timed out at offset {} after {}s even at minimum batch size {}.",
+                    start, batch_timeout_secs, batch_size
                 );
                 break;
             }
@@ -202,7 +224,7 @@ pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
             break;
         }
 
-        start += batch_size;
+        start += row_count;
     }
 
     println!(
@@ -211,6 +233,30 @@ pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
         started.elapsed()
     );
     airports
+}
+
+fn airport_preload_batch_size() -> usize {
+    env::var("IB_AIRPORT_PRELOAD_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_AIRPORT_PRELOAD_BATCH_SIZE)
+}
+
+fn airport_preload_min_batch_size(initial_batch_size: usize) -> usize {
+    env::var("IB_AIRPORT_PRELOAD_MIN_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0 && *value <= initial_batch_size)
+        .unwrap_or(DEFAULT_AIRPORT_PRELOAD_MIN_BATCH_SIZE.min(initial_batch_size))
+}
+
+fn airport_preload_timeout_secs() -> u64 {
+    env::var("IB_AIRPORT_PRELOAD_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_AIRPORT_PRELOAD_TIMEOUT_SECS)
 }
 
 fn map_airport_row(record: Value) -> Option<AirportRow> {

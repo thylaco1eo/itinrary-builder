@@ -56,10 +56,12 @@ pub async fn add_airport(
     data: web::Data<WebData>,
     form: web::Form<AirportRow>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let mut row = form.into_inner();
-    row.mct_records = ensure_airport_default_mct_records(row.mct_records, None);
+    let row = form.into_inner();
+    let mut validation_row = row.clone();
+    validation_row.mct_records =
+        ensure_airport_default_mct_records(validation_row.mct_records, None);
 
-    if let Err(e) = Airport::try_from(row.clone()) {
+    if let Err(e) = Airport::try_from(validation_row) {
         return match e {
             AirportRowError::InvalidCode(_) => {
                 Ok(HttpResponse::BadRequest().json(json!({"status": "invalid airport code"})))

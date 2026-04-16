@@ -1936,47 +1936,53 @@ mod tests {
     #[test]
     fn suppression_record_falls_through_to_broader_default() {
         let mut fra_records = airport_default_mct_records(180);
+        let broader_default = sample_mct_record("", "", "II", "0130");
+        if let Some(index) = fra_records
+            .iter()
+            .position(|existing| existing.same_scope_as(&broader_default))
+        {
+            fra_records[index] = broader_default;
+        }
         fra_records.extend(vec![
-                sample_mct_record("FRA", "FRA", "II", "0100"),
-                AirportMctRecord {
-                    arrival_station: Some("FRA".to_string()),
-                    time: None,
-                    status: "II".to_string(),
-                    departure_station: Some("FRA".to_string()),
-                    requires_connection_building_filter: false,
-                    arrival_carrier: None,
-                    arrival_codeshare_indicator: false,
-                    arrival_codeshare_operating_carrier: None,
-                    departure_carrier: None,
-                    departure_codeshare_indicator: false,
-                    departure_codeshare_operating_carrier: None,
-                    arrival_aircraft_type: None,
-                    arrival_aircraft_body: None,
-                    departure_aircraft_type: None,
-                    departure_aircraft_body: None,
-                    arrival_terminal: None,
-                    departure_terminal: None,
-                    previous_country: None,
-                    previous_station: None,
-                    next_country: None,
-                    next_station: None,
-                    arrival_flight_number_range_start: None,
-                    arrival_flight_number_range_end: None,
-                    departure_flight_number_range_start: None,
-                    departure_flight_number_range_end: None,
-                    previous_state: None,
-                    next_state: None,
-                    previous_region: None,
-                    next_region: None,
-                    effective_from_local: None,
-                    effective_to_local: None,
-                    suppression_indicator: true,
-                    suppression_region: None,
-                    suppression_country: None,
-                    suppression_state: None,
-                },
-                sample_mct_record("", "", "II", "0130"),
-            ]);
+            sample_mct_record("FRA", "FRA", "II", "0100"),
+            AirportMctRecord {
+                arrival_station: Some("FRA".to_string()),
+                time: None,
+                status: "II".to_string(),
+                departure_station: Some("FRA".to_string()),
+                requires_connection_building_filter: false,
+                arrival_carrier: None,
+                arrival_codeshare_indicator: false,
+                arrival_codeshare_operating_carrier: None,
+                departure_carrier: None,
+                departure_codeshare_indicator: false,
+                departure_codeshare_operating_carrier: None,
+                arrival_aircraft_type: None,
+                arrival_aircraft_body: None,
+                departure_aircraft_type: None,
+                departure_aircraft_body: None,
+                arrival_terminal: None,
+                departure_terminal: None,
+                previous_country: None,
+                previous_station: None,
+                next_country: None,
+                next_station: None,
+                arrival_flight_number_range_start: None,
+                arrival_flight_number_range_end: None,
+                departure_flight_number_range_start: None,
+                departure_flight_number_range_end: None,
+                previous_state: None,
+                next_state: None,
+                previous_region: None,
+                next_region: None,
+                effective_from_local: None,
+                effective_to_local: None,
+                suppression_indicator: true,
+                suppression_region: None,
+                suppression_country: None,
+                suppression_state: None,
+            },
+        ]);
         let airports = sample_airport_map(fra_records, vec![]);
         let previous = sample_flight("AA", "100", "JFK", "FRA", 8, 0, None, None);
         let next = sample_flight("LH", "400", "FRA", "MAD", 10, 0, None, None);
