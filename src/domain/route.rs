@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use surrealdb::types::{RecordId, SurrealValue};
 
-#[derive(Serialize, Deserialize, Clone, SurrealValue)]
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue)]
 pub struct Route {
     #[surreal(rename = "in")]
     dep_station: RecordId,

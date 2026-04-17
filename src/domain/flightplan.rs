@@ -116,6 +116,10 @@ pub fn plans_from_leg_records(records: &[FlightLegRecord]) -> Result<Vec<FlightP
 }
 
 pub fn expand(plan: &FlightPlan) -> Vec<FlightRow> {
+    expand_for_table(plan, "flight")
+}
+
+pub fn expand_for_table(plan: &FlightPlan, table: &str) -> Vec<FlightRow> {
     let mut rows = Vec::new();
     let mut date = plan.start_date;
 
@@ -128,7 +132,7 @@ pub fn expand(plan: &FlightPlan) -> Vec<FlightRow> {
 
     while date <= end_date {
         if operates_on_date(plan, date) {
-            rows.push(FlightRow::from_plan(plan, date));
+            rows.push(FlightRow::from_plan_for_table(plan, date, table));
         }
         date = date.succ_opt().unwrap();
     }

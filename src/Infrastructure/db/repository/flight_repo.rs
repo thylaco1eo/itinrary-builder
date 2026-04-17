@@ -1,129 +1,83 @@
-use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use crate::domain::{flightplan::FlightPlan, route::Route};
+use crate::domain::route::Route;
 use crate::Infrastructure::db::model::flight_row::{FlightCacheRow, FlightRow};
 use actix_web::rt::time::timeout;
 use surrealdb::engine::any::Any;
-use surrealdb::method::Transaction;
 use surrealdb::Surreal;
-use surrealdb_types::RecordId;
 
+const PRODUCTION_FLIGHT_TABLE: &str = "flight";
+const PRODUCTION_ROUTE_TABLE: &str = "route";
+const TEMP_FLIGHT_TABLE: &str = "flight_tmp";
+const TEMP_ROUTE_TABLE: &str = "route_tmp";
 const FLIGHT_PRELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const INITIAL_FLIGHT_BATCH_SIZE: usize = 2_000;
 const MIN_FLIGHT_BATCH_SIZE: usize = 250;
 const INITIAL_FLIGHT_IMPORT_CHUNK_SIZE: usize = 2_000;
 const MIN_FLIGHT_IMPORT_CHUNK_SIZE: usize = 125;
+const ROUTE_IMPORT_CHUNK_SIZE: usize = 2_000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RouteUpsert {
-    pub origin: String,
-    pub destination: String,
-    pub flights: Vec<String>,
-    pub companies: Vec<String>,
+pub fn temp_flight_table() -> &'static str {
+    TEMP_FLIGHT_TABLE
 }
 
-pub async fn add_flights_batch(db: &Surreal<Any>, rows: &[FlightRow]) -> surrealdb::Result<()> {
-    if rows.is_empty() {
-        return Ok(());
-    }
+pub fn temp_route_table() -> &'static str {
+    TEMP_ROUTE_TABLE
+}
 
-    // 使用 SDK 的 insert 一次性插入多条记录
-    let _created: Vec<FlightRow> = db.insert("flight").content(rows.to_vec()).await?;
+pub async fn load_schedule_tmp(
+    db: &Surreal<Any>,
+    flight_rows: &[FlightRow],
+    route_rows: &[Route],
+) -> surrealdb::Result<()> {
+    clear_schedule_tables(db, TEMP_FLIGHT_TABLE, TEMP_ROUTE_TABLE).await?;
+    if !flight_rows.is_empty() {
+        insert_flight_rows(db, TEMP_FLIGHT_TABLE, flight_rows).await?;
+    }
+    if !route_rows.is_empty() {
+        insert_route_rows(db, TEMP_ROUTE_TABLE, route_rows).await?;
+    }
     Ok(())
 }
 
-pub async fn import_schedule_atomically(
-    db: &Surreal<Any>,
-    flight_rows: &[FlightRow],
-    route_updates: &[RouteUpsert],
-) -> surrealdb::Result<()> {
+pub async fn promote_tmp_to_production(db: &Surreal<Any>) -> surrealdb::Result<()> {
+    let switch_started = Instant::now();
     let transaction = db.clone().begin().await?;
+    let promote_sql = format!(
+        "DELETE {prod_flight};\
+DELETE {prod_route};\
+INSERT INTO {prod_flight} (SELECT * FROM {tmp_flight});\
+INSERT RELATION INTO {prod_route} (SELECT * FROM {tmp_route});",
+        prod_flight = PRODUCTION_FLIGHT_TABLE,
+        prod_route = PRODUCTION_ROUTE_TABLE,
+        tmp_flight = TEMP_FLIGHT_TABLE,
+        tmp_route = TEMP_ROUTE_TABLE,
+    );
 
-    let apply_result = apply_schedule_import(&transaction, flight_rows, route_updates).await;
-    if let Err(error) = apply_result {
-        if let Err(cancel_error) = transaction.cancel().await {
-            eprintln!(
-                "Failed to cancel schedule import transaction after error: {}",
-                cancel_error
-            );
+    let response = match transaction.query(promote_sql).await {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = transaction.cancel().await;
+            return Err(error);
         }
-        return Err(error);
+    };
+
+    if let Err(error) = response.check() {
+        let _ = transaction.cancel().await;
+        return Err(error.into());
     }
 
     transaction.commit().await?;
+    println!(
+        "Production schedule switch completed in {:?}.",
+        switch_started.elapsed()
+    );
     Ok(())
 }
 
-pub async fn add_route(db: &Surreal<Any>, plan: &FlightPlan) -> surrealdb::Result<()> {
-    let origin = plan.origin.as_str();
-    let destination = plan.destination.as_str();
-    let flight_id = format!("{}_{}", plan.company, plan.flight_no);
-    let company = plan.company.clone();
-    let route_id = format!("{}_{}", origin, destination);
-
-    match db
-        .select::<Option<Route>>(("route", route_id.as_str()))
-        .await?
-    {
-        Some(mut route) => {
-            let mut dirty = false;
-
-            if !route.flights.contains(&flight_id) {
-                route.flights.push(flight_id);
-                dirty = true;
-            }
-            if !route.companies.contains(&company) {
-                route.companies.push(company);
-                dirty = true;
-            }
-
-            if dirty {
-                let _: Option<Route> = db.update(("route", route_id.as_str())).merge(route).await?;
-            }
-        }
-        None => {
-            let route = Route::new(
-                RecordId::new("airport", origin),
-                RecordId::new("airport", destination),
-                RecordId::new("route", route_id.as_str()),
-                vec![flight_id],
-                vec![company],
-            );
-            let _: Vec<Route> = db.insert("route").relation(route).await?;
-        }
-    }
-
-    Ok(())
-}
-
-async fn apply_schedule_import(
-    transaction: &Transaction<Any>,
-    flight_rows: &[FlightRow],
-    route_updates: &[RouteUpsert],
-) -> surrealdb::Result<()> {
-    if !flight_rows.is_empty() {
-        insert_flight_rows_in_transaction(transaction, flight_rows).await?;
-    }
-
-    let route_started = Instant::now();
-    for (index, route_update) in route_updates.iter().enumerate() {
-        upsert_route_in_transaction(transaction, route_update).await?;
-        if (index + 1) % 5_000 == 0 || index + 1 == route_updates.len() {
-            println!(
-                "Atomic route import progress: {}/{} route updates applied in {:?}.",
-                index + 1,
-                route_updates.len(),
-                route_started.elapsed()
-            );
-        }
-    }
-
-    Ok(())
-}
-
-async fn insert_flight_rows_in_transaction(
-    transaction: &Transaction<Any>,
+async fn insert_flight_rows(
+    db: &Surreal<Any>,
+    flight_table: &str,
     flight_rows: &[FlightRow],
 ) -> surrealdb::Result<()> {
     let started = Instant::now();
@@ -134,14 +88,15 @@ async fn insert_flight_rows_in_transaction(
         let end = (inserted + chunk_size).min(flight_rows.len());
         let chunk = &flight_rows[inserted..end];
         let insert_result: surrealdb::Result<Vec<FlightRow>> =
-            transaction.insert("flight").content(chunk.to_vec()).await;
+            db.insert(flight_table).content(chunk.to_vec()).await;
 
         match insert_result {
             Ok(_) => {
                 inserted = end;
                 if inserted % 10_000 == 0 || inserted == flight_rows.len() {
                     println!(
-                        "Atomic flight import progress: {}/{} rows inserted in {:?} (chunk_size={}).",
+                        "Flight import progress for {}: {}/{} rows inserted in {:?} (chunk_size={}).",
+                        flight_table,
                         inserted,
                         flight_rows.len(),
                         started.elapsed(),
@@ -152,7 +107,8 @@ async fn insert_flight_rows_in_transaction(
             Err(error) if is_message_too_long(&error) && chunk_size > MIN_FLIGHT_IMPORT_CHUNK_SIZE => {
                 let next_chunk_size = (chunk_size / 2).max(MIN_FLIGHT_IMPORT_CHUNK_SIZE);
                 eprintln!(
-                    "Atomic flight import chunk was too large at offset {}. Reducing chunk size {} -> {}.",
+                    "Flight import chunk was too large for table {} at offset {}. Reducing chunk size {} -> {}.",
+                    flight_table,
                     inserted,
                     chunk_size,
                     next_chunk_size
@@ -166,54 +122,44 @@ async fn insert_flight_rows_in_transaction(
     Ok(())
 }
 
-fn is_message_too_long(error: &surrealdb::Error) -> bool {
-    error.to_string().contains("Message too long")
-}
-
-async fn upsert_route_in_transaction(
-    transaction: &Transaction<Any>,
-    route_update: &RouteUpsert,
+async fn insert_route_rows(
+    db: &Surreal<Any>,
+    route_table: &str,
+    route_rows: &[Route],
 ) -> surrealdb::Result<()> {
-    let route_id = format!("{}_{}", route_update.origin, route_update.destination);
+    let started = Instant::now();
 
-    match transaction
-        .select::<Option<Route>>(("route", route_id.as_str()))
-        .await?
-    {
-        Some(mut route) => {
-            let merged_flights = route
-                .flights
-                .into_iter()
-                .chain(route_update.flights.iter().cloned())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let merged_companies = route
-                .companies
-                .into_iter()
-                .chain(route_update.companies.iter().cloned())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-
-            route.flights = merged_flights;
-            route.companies = merged_companies;
-
-            let _: Option<Route> = transaction.update(("route", route_id.as_str())).merge(route).await?;
-        }
-        None => {
-            let route = Route::new(
-                RecordId::new("airport", route_update.origin.as_str()),
-                RecordId::new("airport", route_update.destination.as_str()),
-                RecordId::new("route", route_id.as_str()),
-                route_update.flights.clone(),
-                route_update.companies.clone(),
+    for (chunk_index, chunk) in route_rows.chunks(ROUTE_IMPORT_CHUNK_SIZE).enumerate() {
+        let _created: Vec<Route> = db.insert(route_table).relation(chunk.to_vec()).await?;
+        let inserted = ((chunk_index + 1) * ROUTE_IMPORT_CHUNK_SIZE).min(route_rows.len());
+        if inserted % 5_000 == 0 || inserted == route_rows.len() {
+            println!(
+                "Route import progress for {}: {}/{} rows inserted in {:?}.",
+                route_table,
+                inserted,
+                route_rows.len(),
+                started.elapsed()
             );
-            let _: Vec<Route> = transaction.insert("route").relation(route).await?;
         }
     }
 
     Ok(())
+}
+
+async fn clear_schedule_tables(
+    db: &Surreal<Any>,
+    flight_table: &str,
+    route_table: &str,
+) -> surrealdb::Result<()> {
+    let response = db
+        .query(format!("DELETE {flight_table}; DELETE {route_table};"))
+        .await?;
+    response.check()?;
+    Ok(())
+}
+
+fn is_message_too_long(error: &surrealdb::Error) -> bool {
+    error.to_string().contains("Message too long")
 }
 
 pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightCacheRow> {
@@ -221,7 +167,7 @@ pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightCacheRow> {
     let probe_started = Instant::now();
     match timeout(
         Duration::from_secs(10),
-        db.query("SELECT id FROM flight LIMIT 1"),
+        db.query(format!("SELECT id FROM {} LIMIT 1", PRODUCTION_FLIGHT_TABLE)),
     )
     .await
     {
@@ -252,8 +198,8 @@ pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightCacheRow> {
 
     loop {
         let sql = format!(
-            "SELECT company, flight_num, origin_code, destination_code, dep_local, arr_local, block_time_minutes, departure_terminal, arrival_terminal, operating_designator, duplicate_designators, joint_operation_airline_designators, meal_service_note, in_flight_service_info, electronic_ticketing_info FROM flight START {} LIMIT {}",
-            start, batch_size
+            "SELECT company, flight_num, origin_code, destination_code, dep_local, arr_local, block_time_minutes, departure_terminal, arrival_terminal, operating_designator, duplicate_designators, joint_operation_airline_designators, meal_service_note, in_flight_service_info, electronic_ticketing_info FROM {} START {} LIMIT {}",
+            PRODUCTION_FLIGHT_TABLE, start, batch_size
         );
         let batch_started = Instant::now();
         let mut response = match timeout(FLIGHT_PRELOAD_TIMEOUT, db.query(&sql)).await {

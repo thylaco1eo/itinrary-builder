@@ -128,6 +128,10 @@ impl TryFrom<FlightRow> for Flight {
 
 impl FlightRow {
     pub fn from_plan(flight_plan: &FlightPlan, date: NaiveDate) -> Self {
+        Self::from_plan_for_table(flight_plan, date, "flight")
+    }
+
+    pub fn from_plan_for_table(flight_plan: &FlightPlan, date: NaiveDate, table: &str) -> Self {
         let id_str = format!(
             "{}_{}_{}_{}_{}",
             flight_plan.company,
@@ -139,7 +143,7 @@ impl FlightRow {
         let dep_offset = FixedOffset::from_str(flight_plan.dep_tz.as_str()).unwrap();
         let arr_offset = FixedOffset::from_str(flight_plan.arr_tz.as_str()).unwrap();
         FlightRow {
-            id: RecordId::new("flight", id_str.as_str()),
+            id: RecordId::new(table, id_str.as_str()),
             company: flight_plan.company.clone(),
             flight_num: flight_plan.flight_no.clone(),
             origin_code: flight_plan.origin.as_str().to_string(),

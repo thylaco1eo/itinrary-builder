@@ -19,7 +19,11 @@ pub async fn check_db_status(db: &Surreal<Any>, ns: &str, database: &str) {
         .expect("Failed to select namespace and database");
     let response = db
         .query(
-            "DEFINE TABLE IF NOT EXISTS airport;DEFINE TABLE IF NOT EXISTS flight;DEFINE TABLE IF NOT EXISTS route TYPE RELATION;",
+            "DEFINE TABLE IF NOT EXISTS airport;\
+DEFINE TABLE IF NOT EXISTS flight;\
+DEFINE TABLE IF NOT EXISTS route TYPE RELATION;\
+DEFINE TABLE IF NOT EXISTS flight_tmp;\
+DEFINE TABLE IF NOT EXISTS route_tmp TYPE RELATION;",
         )
         .await
         .expect("Failed to execute empty query");

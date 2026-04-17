@@ -23,6 +23,13 @@ pub struct FlightCacheUpdateSummary {
     pub skipped_missing_airports: usize,
 }
 
+#[derive(Debug, Default)]
+pub struct FlightCacheReplaceSummary {
+    pub active_flights: usize,
+    pub duplicate_keys_within_snapshot: usize,
+    pub skipped_missing_airports: usize,
+}
+
 impl WebData {
     pub async fn new(data_base: Surreal<any::Any>) -> Self {
         println!("Loading airports into memory...");
@@ -154,6 +161,29 @@ impl WebData {
             }
         }
 
+        summary
+    }
+
+    pub fn replace_flights(&self, rows: Vec<FlightRow>) -> FlightCacheReplaceSummary {
+        let airports = self.airports.read().unwrap();
+        let mut next_flights = HashMap::new();
+        let mut summary = FlightCacheReplaceSummary::default();
+
+        for row in rows {
+            match build_flight_entry(row, &airports) {
+                FlightRowLoadResult::Ready { key, flight } => {
+                    if next_flights.insert(key, flight).is_some() {
+                        summary.duplicate_keys_within_snapshot += 1;
+                    }
+                }
+                FlightRowLoadResult::MissingAirports => {
+                    summary.skipped_missing_airports += 1;
+                }
+            }
+        }
+
+        summary.active_flights = next_flights.len();
+        *self.flights.write().unwrap() = next_flights;
         summary
     }
 }
