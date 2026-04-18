@@ -98,14 +98,14 @@ pub async fn set_airport_mct_payload(
 
     if update_filters {
         db.query(
-            "UPDATE type::record('airport',$id) SET mct_records = $mct_records, connection_building_filters = $connection_building_filters UNSET mct",
+            "UPDATE type::record('airport',$id) SET mct = NONE, mct_records = $mct_records, connection_building_filters = $connection_building_filters",
         )
         .bind(("id", code.to_string()))
         .bind(("mct_records", mct_records))
         .bind(("connection_building_filters", connection_building_filters))
         .await?;
     } else {
-        db.query("UPDATE type::record('airport',$id) SET mct_records = $mct_records UNSET mct")
+        db.query("UPDATE type::record('airport',$id) SET mct = NONE, mct_records = $mct_records")
             .bind(("id", code.to_string()))
             .bind(("mct_records", mct_records))
             .await?;
@@ -115,7 +115,7 @@ pub async fn set_airport_mct_payload(
 }
 
 pub async fn clear_all_airport_mct_records(db: &Surreal<Any>) -> surrealdb::Result<()> {
-    db.query("UPDATE airport SET mct_records = [], connection_building_filters = [] UNSET mct")
+    db.query("UPDATE airport SET mct = NONE, mct_records = [], connection_building_filters = []")
         .await?;
     Ok(())
 }
