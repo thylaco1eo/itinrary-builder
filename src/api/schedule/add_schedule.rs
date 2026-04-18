@@ -1,4 +1,5 @@
 use crate::domain::flightplan;
+use crate::domain::route::Route;
 use crate::memory::core::WebData;
 use crate::Infrastructure::db::repository::flight_repo;
 use crate::Infrastructure::file_loader::ssim_loader::{OagStreamIterator, ParseItem};
@@ -22,7 +23,7 @@ struct StagedScheduleImport {
     duplicate_flight_rows_skipped: usize,
     build_duration: std::time::Duration,
     flight_rows: Vec<crate::Infrastructure::db::model::flight_row::FlightRow>,
-    route_updates: Vec<flight_repo::RouteUpsert>,
+    route_rows: Vec<Route>,
 }
 
 #[derive(Debug, Default)]
@@ -44,37 +45,48 @@ pub async fn add_schedule(
     };
     let stage_duration = stage_started.elapsed();
     println!(
-        "Staged schedule import ready: {} OAG flights, {} physical legs, {} plan variants, {} unique flight rows, {} duplicate flight rows skipped, {} route updates.",
+        "Staged schedule import ready for tmp tables: {} OAG flights, {} physical legs, {} plan variants, {} unique flight rows, {} duplicate flight rows skipped, {} route rows.",
         staged.flight_count,
         staged.segment_count,
         staged.plan_count,
         staged.flight_rows.len(),
         staged.duplicate_flight_rows_skipped,
-        staged.route_updates.len()
+        staged.route_rows.len()
     );
 
     let db_started = Instant::now();
-    if let Err(error) = flight_repo::import_schedule_atomically(
+    if let Err(error) = flight_repo::load_schedule_tmp(
         data.database(),
         &staged.flight_rows,
-        &staged.route_updates,
+        &staged.route_rows,
     )
     .await
     {
         return Ok(HttpResponse::InternalServerError().body(format!(
-            "Atomic schedule import failed: {}",
+            "Tmp schedule load failed: {}",
             error
         )));
     }
     let db_duration = db_started.elapsed();
 
+    let promote_started = Instant::now();
+    if let Err(error) = flight_repo::promote_tmp_to_production(data.database()).await {
+        return Ok(HttpResponse::InternalServerError().body(format!(
+            "Failed to promote tmp schedule into production tables: {}",
+            error
+        )));
+    }
+    let promote_duration = promote_started.elapsed();
+
     let cache_started = Instant::now();
-    let cache_summary = data.upsert_flights(staged.flight_rows);
+    let cache_summary = data.replace_flights(staged.flight_rows);
     let cache_duration = cache_started.elapsed();
 
     println!(
-        "Total: {} OAG flights with {} physical legs and {} imported plan variants.",
-        staged.flight_count, staged.segment_count, staged.plan_count
+        "Total: {} OAG flights with {} physical legs and {} imported plan variants into production tables.",
+        staged.flight_count,
+        staged.segment_count,
+        staged.plan_count
     );
     println!(
         "Skipped {} duplicate flight rows while staging.",
@@ -82,12 +94,13 @@ pub async fn add_schedule(
     );
     println!("⏱️ Stage schedule import: {:?}", stage_duration);
     println!("⏱️ Build flightplan: {:?}", staged.build_duration);
-    println!("⏱️ DB atomic import: {:?}", db_duration);
-    println!("⏱️ Memory cache refresh: {:?}", cache_duration);
+    println!("⏱️ DB tmp load: {:?}", db_duration);
+    println!("⏱️ Production promotion: {:?}", promote_duration);
+    println!("⏱️ Memory cache replace: {:?}", cache_duration);
     println!(
-        "Updated in-memory flights atomically: {} inserted, {} overwritten, {} skipped (missing airports).",
-        cache_summary.upserted,
-        cache_summary.overwritten,
+        "Replaced in-memory schedule snapshot: {} active flights, {} duplicate keys inside snapshot, {} skipped (missing airports).",
+        cache_summary.active_flights,
+        cache_summary.duplicate_keys_within_snapshot,
         cache_summary.skipped_missing_airports
     );
 
@@ -120,7 +133,11 @@ fn stage_schedule_import(file: File) -> Result<StagedScheduleImport, String> {
                     &mut flight_rows,
                     &mut seen_flight_row_ids,
                     &mut duplicate_flight_rows_skipped,
-                    plans.iter().flat_map(flightplan::expand),
+                    plans
+                        .iter()
+                        .flat_map(|plan| {
+                            flightplan::expand_for_table(plan, flight_repo::temp_flight_table())
+                        }),
                 );
                 accumulate_route_updates(&mut route_accumulators, &plans);
                 build_duration += start_build.elapsed();
@@ -149,7 +166,7 @@ fn stage_schedule_import(file: File) -> Result<StagedScheduleImport, String> {
         duplicate_flight_rows_skipped,
         build_duration,
         flight_rows,
-        route_updates: finalize_route_updates(route_accumulators),
+        route_rows: finalize_route_rows(route_accumulators, flight_repo::temp_route_table()),
     })
 }
 
@@ -185,26 +202,27 @@ fn accumulate_route_updates(
     }
 }
 
-fn finalize_route_updates(
+fn finalize_route_rows(
     accumulators: HashMap<(String, String), RouteAccumulator>,
-) -> Vec<flight_repo::RouteUpsert> {
-    let mut route_updates = accumulators
+    route_table: &str,
+) -> Vec<Route> {
+    let mut route_rows = accumulators
         .into_iter()
-        .map(|((origin, destination), accumulator)| flight_repo::RouteUpsert {
-            origin,
-            destination,
-            flights: accumulator.flights.into_iter().collect(),
-            companies: accumulator.companies.into_iter().collect(),
+        .map(|((origin, destination), accumulator)| {
+            let route_id = format!("{}_{}", origin, destination);
+            Route::new(
+                surrealdb_types::RecordId::new("airport", origin.as_str()),
+                surrealdb_types::RecordId::new("airport", destination.as_str()),
+                surrealdb_types::RecordId::new(route_table, route_id.as_str()),
+                accumulator.flights.into_iter().collect(),
+                accumulator.companies.into_iter().collect(),
+            )
         })
         .collect::<Vec<_>>();
 
-    route_updates.sort_by(|left, right| {
-        left.origin
-            .cmp(&right.origin)
-            .then_with(|| left.destination.cmp(&right.destination))
-    });
+    route_rows.sort_by(|left, right| left.id.cmp(&right.id));
 
-    route_updates
+    route_rows
 }
 
 #[cfg(test)]
@@ -223,17 +241,15 @@ mod tests {
         let mut accumulators = HashMap::new();
 
         accumulate_route_updates(&mut accumulators, &plans);
-        let route_updates = finalize_route_updates(accumulators);
+        let route_rows = finalize_route_rows(accumulators, "route_tmp");
 
-        assert_eq!(route_updates.len(), 1);
-        assert_eq!(route_updates[0].origin, "PEK");
-        assert_eq!(route_updates[0].destination, "GRU");
+        assert_eq!(route_rows.len(), 1);
         assert_eq!(
-            route_updates[0].flights,
+            route_rows[0].flights,
             vec!["CA_897".to_string(), "UA_551".to_string()]
         );
         assert_eq!(
-            route_updates[0].companies,
+            route_rows[0].companies,
             vec!["CA".to_string(), "UA".to_string()]
         );
     }
