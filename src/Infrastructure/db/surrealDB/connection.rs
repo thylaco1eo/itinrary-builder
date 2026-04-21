@@ -20,6 +20,7 @@ pub async fn check_db_status(db: &Surreal<Any>, ns: &str, database: &str) {
     let response = db
         .query(
             "DEFINE TABLE IF NOT EXISTS airport;\
+DEFINE TABLE IF NOT EXISTS mct;\
 DEFINE TABLE IF NOT EXISTS flight;\
 DEFINE TABLE IF NOT EXISTS route TYPE RELATION;\
 DEFINE TABLE IF NOT EXISTS flight_tmp;\
