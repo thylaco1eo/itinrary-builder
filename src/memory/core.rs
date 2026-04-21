@@ -1,9 +1,11 @@
 use crate::domain::airport::{Airport, AirportCode};
 use crate::domain::flight::Flightcore;
+use crate::domain::mct::{AirportMctData, GlobalMctData};
 use crate::Infrastructure::db::model::airport_row::{AirportRow, AirportRowError};
 use crate::Infrastructure::db::model::flight_row::{FlightCacheRow, FlightRow};
 use crate::Infrastructure::db::repository::airport_repo::get_all_airports;
 use crate::Infrastructure::db::repository::flight_repo::get_flights;
+use crate::Infrastructure::db::repository::mct_repo::{get_all_airport_mct, get_global_mct};
 use chrono::NaiveDate;
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -14,6 +16,8 @@ pub struct WebData {
     database: Surreal<any::Any>,
     flights: RwLock<HashMap<String, Flightcore>>,
     airports: RwLock<HashMap<String, Airport>>,
+    airport_mct: RwLock<HashMap<String, AirportMctData>>,
+    global_mct: RwLock<GlobalMctData>,
 }
 
 #[derive(Debug, Default)]
@@ -35,6 +39,20 @@ impl WebData {
         println!("Loading airports into memory...");
         let mut flights = HashMap::new();
         let airport_rows = get_all_airports(&data_base).await;
+        let airport_mct = match get_all_airport_mct(&data_base).await {
+            Ok(airport_mct) => airport_mct.into_iter().collect::<HashMap<_, _>>(),
+            Err(error) => {
+                eprintln!("Failed to load airport MCT payloads from database: {}", error);
+                HashMap::new()
+            }
+        };
+        let global_mct = match get_global_mct(&data_base).await {
+            Ok(global_mct) => global_mct,
+            Err(error) => {
+                eprintln!("Failed to load global MCT payload from database: {}", error);
+                GlobalMctData::default()
+            }
+        };
         let source_airport_rows = airport_rows.len();
         let airport_row_buffer_bytes =
             estimate_airport_row_vec_bytes(&airport_rows, airport_rows.capacity());
@@ -44,6 +62,19 @@ impl WebData {
             airports.len(),
             source_airport_rows,
             rejected_airports
+        );
+        println!(
+            "Loaded {} airport-specific MCT payloads into memory ({} records total).",
+            airport_mct.len(),
+            airport_mct
+                .values()
+                .map(|payload| payload.mct_records.len())
+                .sum::<usize>()
+        );
+        println!(
+            "Loaded {} global MCT records and {} global connection-building filters into memory.",
+            global_mct.mct_records.len(),
+            global_mct.connection_building_filters.len()
         );
 
         println!("Loading flights into memory...");
@@ -83,21 +114,27 @@ impl WebData {
         );
 
         let airport_map_bytes = estimate_airport_map_bytes(&airports);
+        let airport_mct_map_bytes = estimate_airport_mct_map_bytes(&airport_mct);
         let flight_map_bytes = estimate_flight_map_bytes(&flights);
-        let retained_bytes = airport_map_bytes + flight_map_bytes;
+        let global_mct_bytes = estimate_mct_payload_bytes(&global_mct);
+        let retained_bytes = airport_map_bytes + airport_mct_map_bytes + global_mct_bytes + flight_map_bytes;
         let startup_peak_bytes = retained_bytes + flight_row_buffer_bytes;
         println!(
-            "Approximate memory usage: airport row buffer ~= {}, raw flight row buffer ~= {}, airport map ~= {}, flight map ~= {}, retained ~= {}, startup peak during preload ~= {}.",
+            "Approximate memory usage: airport row buffer ~= {}, raw flight row buffer ~= {}, airport map ~= {}, airport MCT map ~= {}, global MCT ~= {}, flight map ~= {}, retained ~= {}, startup peak during preload ~= {}.",
             format_bytes(airport_row_buffer_bytes),
             format_bytes(flight_row_buffer_bytes),
             format_bytes(airport_map_bytes),
+            format_bytes(airport_mct_map_bytes),
+            format_bytes(global_mct_bytes),
             format_bytes(flight_map_bytes),
             format_bytes(retained_bytes),
             format_bytes(startup_peak_bytes)
         );
         println!(
-            "Type sizes: Airport = {} B, FlightCacheRow = {} B, FlightRow = {} B, Flightcore = {} B.",
+            "Type sizes: Airport = {} B, AirportMctData = {} B, GlobalMctData = {} B, FlightCacheRow = {} B, FlightRow = {} B, Flightcore = {} B.",
             size_of::<Airport>(),
+            size_of::<AirportMctData>(),
+            size_of::<GlobalMctData>(),
             size_of::<FlightCacheRow>(),
             size_of::<FlightRow>(),
             size_of::<Flightcore>()
@@ -107,6 +144,8 @@ impl WebData {
             database: data_base,
             flights: RwLock::new(flights),
             airports: RwLock::new(airports),
+            airport_mct: RwLock::new(airport_mct),
+            global_mct: RwLock::new(global_mct),
         }
     }
 
@@ -120,6 +159,14 @@ impl WebData {
 
     pub fn airports(&self) -> RwLockReadGuard<'_, HashMap<String, Airport>> {
         self.airports.read().unwrap()
+    }
+
+    pub fn airport_mct(&self) -> RwLockReadGuard<'_, HashMap<String, AirportMctData>> {
+        self.airport_mct.read().unwrap()
+    }
+
+    pub fn global_mct(&self) -> RwLockReadGuard<'_, GlobalMctData> {
+        self.global_mct.read().unwrap()
     }
 
     pub fn upsert_airport(&self, row: AirportRow) -> Result<(), AirportRowError> {
@@ -139,6 +186,59 @@ impl WebData {
         );
         *self.airports.write().unwrap() = airports;
         airport_count
+    }
+
+    pub async fn reload_airport_mct(&self) -> usize {
+        let airport_mct = match get_all_airport_mct(&self.database).await {
+            Ok(airport_mct) => airport_mct.into_iter().collect::<HashMap<_, _>>(),
+            Err(error) => {
+                eprintln!("Failed to reload airport MCT payloads from database: {}", error);
+                HashMap::new()
+            }
+        };
+        let record_count = airport_mct
+            .values()
+            .map(|payload| payload.mct_records.len())
+            .sum::<usize>();
+        println!(
+            "Reloaded airport MCT payloads ({} airports, {} records).",
+            airport_mct.len(),
+            record_count
+        );
+        *self.airport_mct.write().unwrap() = airport_mct;
+        record_count
+    }
+
+    pub async fn reload_global_mct(&self) -> usize {
+        let global_mct = match get_global_mct(&self.database).await {
+            Ok(global_mct) => global_mct,
+            Err(error) => {
+                eprintln!("Failed to reload global MCT payload from database: {}", error);
+                GlobalMctData::default()
+            }
+        };
+        let record_count = global_mct.mct_records.len();
+        println!(
+            "Reloaded global MCT payload ({} records, {} connection-building filters).",
+            record_count,
+            global_mct.connection_building_filters.len()
+        );
+        *self.global_mct.write().unwrap() = global_mct;
+        record_count
+    }
+
+    pub fn set_airport_mct(&self, code: String, airport_mct: AirportMctData) {
+        let mut airport_mct_map = self.airport_mct.write().unwrap();
+        if airport_mct.mct_records.is_empty() && airport_mct.connection_building_filters.is_empty()
+        {
+            airport_mct_map.remove(&code);
+        } else {
+            airport_mct_map.insert(code, airport_mct);
+        }
+    }
+
+    pub fn set_global_mct(&self, global_mct: GlobalMctData) {
+        *self.global_mct.write().unwrap() = global_mct;
     }
 
     pub fn upsert_flights(&self, rows: Vec<FlightRow>) -> FlightCacheUpdateSummary {
@@ -317,6 +417,29 @@ fn estimate_airport_row_vec_bytes(
             .sum::<usize>()
 }
 
+fn estimate_airport_mct_map_bytes(airport_mct: &HashMap<String, AirportMctData>) -> usize {
+    size_of::<HashMap<String, AirportMctData>>()
+        + airport_mct.capacity() * size_of::<(String, AirportMctData)>()
+        + airport_mct
+            .iter()
+            .map(|(key, payload)| key.capacity() + estimate_mct_payload_bytes(payload))
+            .sum::<usize>()
+}
+
+fn estimate_mct_payload_bytes(payload: &AirportMctData) -> usize {
+    size_of::<AirportMctData>()
+        + payload
+            .mct_records
+            .iter()
+            .map(estimate_mct_record_bytes)
+            .sum::<usize>()
+        + payload
+            .connection_building_filters
+            .iter()
+            .map(estimate_connection_building_filter_bytes)
+            .sum::<usize>()
+}
+
 fn estimate_flight_row_vec_bytes(rows: &[FlightCacheRow], capacity: usize) -> usize {
     size_of::<Vec<FlightCacheRow>>()
         + capacity * size_of::<FlightCacheRow>()
@@ -347,6 +470,52 @@ fn estimate_airport_map_bytes(airports: &HashMap<String, Airport>) -> usize {
             .sum::<usize>()
 }
 
+fn estimate_mct_record_bytes(record: &crate::domain::mct::AirportMctRecord) -> usize {
+    option_string_capacity(&record.arrival_station)
+        + option_string_capacity(&record.time)
+        + record.status.capacity()
+        + option_string_capacity(&record.departure_station)
+        + option_string_capacity(&record.arrival_carrier)
+        + option_string_capacity(&record.arrival_codeshare_operating_carrier)
+        + option_string_capacity(&record.departure_carrier)
+        + option_string_capacity(&record.departure_codeshare_operating_carrier)
+        + option_string_capacity(&record.arrival_aircraft_type)
+        + option_string_capacity(&record.arrival_aircraft_body)
+        + option_string_capacity(&record.departure_aircraft_type)
+        + option_string_capacity(&record.departure_aircraft_body)
+        + option_string_capacity(&record.arrival_terminal)
+        + option_string_capacity(&record.departure_terminal)
+        + option_string_capacity(&record.previous_country)
+        + option_string_capacity(&record.previous_station)
+        + option_string_capacity(&record.next_country)
+        + option_string_capacity(&record.next_station)
+        + option_string_capacity(&record.arrival_flight_number_range_start)
+        + option_string_capacity(&record.arrival_flight_number_range_end)
+        + option_string_capacity(&record.departure_flight_number_range_start)
+        + option_string_capacity(&record.departure_flight_number_range_end)
+        + option_string_capacity(&record.previous_state)
+        + option_string_capacity(&record.next_state)
+        + option_string_capacity(&record.previous_region)
+        + option_string_capacity(&record.next_region)
+        + option_string_capacity(&record.effective_from_local)
+        + option_string_capacity(&record.effective_to_local)
+        + option_string_capacity(&record.suppression_region)
+        + option_string_capacity(&record.suppression_country)
+        + option_string_capacity(&record.suppression_state)
+}
+
+fn estimate_connection_building_filter_bytes(
+    filter: &crate::domain::mct::ConnectionBuildingFilter,
+) -> usize {
+    filter.submitting_carrier.capacity()
+        + size_of::<Vec<String>>()
+        + filter
+            .partner_carrier_codes
+            .iter()
+            .map(String::capacity)
+            .sum::<usize>()
+}
+
 fn estimate_flight_map_bytes(flights: &HashMap<String, Flightcore>) -> usize {
     size_of::<HashMap<String, Flightcore>>()
         + flights.capacity() * size_of::<(String, Flightcore)>()
@@ -360,6 +529,10 @@ fn estimate_flight_map_bytes(flights: &HashMap<String, Flightcore>) -> usize {
                     + flight.destination().as_str().len()
             })
             .sum::<usize>()
+}
+
+fn option_string_capacity(value: &Option<String>) -> usize {
+    value.as_ref().map_or(0, String::capacity)
 }
 
 fn format_bytes(bytes: usize) -> String {

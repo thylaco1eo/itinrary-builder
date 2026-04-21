@@ -1,8 +1,8 @@
 use anyhow::Context;
 use crate::domain::airport::Airport;
 use crate::domain::mct::{
-    AirportMctRecord, ConnectionBuildingFilter, MctActionIndicator, MctContentIndicator,
-    ParsedMctFile, ensure_airport_default_mct_records,
+    AirportMctData, AirportMctRecord, ConnectionBuildingFilter, MctActionIndicator,
+    MctContentIndicator, ParsedMctFile, GlobalMctData, is_global_mct_record,
 };
 use crate::memory::core::WebData;
 use crate::Infrastructure::db;
@@ -58,11 +58,7 @@ pub async fn add_airport(
     form: web::Form<AirportRow>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let row = form.into_inner();
-    let mut validation_row = row.clone();
-    validation_row.mct_records =
-        ensure_airport_default_mct_records(validation_row.mct_records, None);
-
-    if let Err(e) = Airport::try_from(validation_row) {
+    if let Err(e) = Airport::try_from(row.clone()) {
         return match e {
             AirportRowError::InvalidCode(_) => {
                 Ok(HttpResponse::BadRequest().json(json!({"status": "invalid airport code"})))
@@ -111,8 +107,9 @@ pub async fn upload_airport_mct(
     };
 
     match apply_mct_file(data.database(), parsed).await {
-        Ok((summary, updated_airports)) => {
-            sync_airport_cache(&data, updated_airports.iter()).await?;
+        Ok((summary, _updated_airports)) => {
+            data.reload_airport_mct().await;
+            data.reload_global_mct().await;
             Ok(HttpResponse::Ok().json(json!({
                 "status": "ok",
                 "summary": summary
@@ -135,7 +132,7 @@ pub async fn put_airport_mct(
     body: web::Json<AirportMctRecord>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let airport_code = path.into_inner().trim().to_uppercase();
-    let Some(airport) = db::repository::airport_repo::get_airport(data.database(), &airport_code)
+    let Some(_airport) = db::repository::airport_repo::get_airport(data.database(), &airport_code)
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?
     else {
@@ -155,17 +152,32 @@ pub async fn put_airport_mct(
         }
     };
 
-    let mut mct_records = airport.mct_records;
+    let current_airport_mct = db::repository::mct_repo::get_airport_mct(data.database(), &airport_code)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .unwrap_or_default();
+    let mut mct_records = current_airport_mct.mct_records;
     let upsert_result = upsert_airport_record(&mut mct_records, record);
+    let airport_mct = AirportMctData {
+        mct_records: mct_records.clone(),
+        connection_building_filters: Vec::new(),
+    };
 
-    db::repository::airport_repo::set_airport_mct_records(
+    db::repository::mct_repo::set_airport_mct(
         data.database(),
         &airport_code,
-        mct_records.clone(),
+        &airport_mct,
     )
     .await
     .map_err(actix_web::error::ErrorInternalServerError)?;
-    sync_airport_cache(&data, std::iter::once(&airport_code)).await?;
+    db::repository::airport_repo::clear_legacy_airport_mct_fields_for_airport(
+        data.database(),
+        &airport_code,
+    )
+    .await
+    .map_err(actix_web::error::ErrorInternalServerError)?;
+    data.set_airport_mct(airport_code.clone(), airport_mct);
+    let global_filters = data.global_mct().connection_building_filters.clone();
 
     Ok(HttpResponse::Ok().json(json!({
         "status": "ok",
@@ -177,7 +189,7 @@ pub async fn put_airport_mct(
             UpsertRecordResult::Unchanged => "unchanged"
         },
         "mct_records": mct_records,
-        "connection_building_filters": airport.connection_building_filters
+        "connection_building_filters": global_filters
     })))
 }
 
@@ -190,14 +202,19 @@ pub async fn get_airport_mct(
     let airport = db::repository::airport_repo::get_airport(data.database(), &airport_code)
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
+    let airport_mct = db::repository::mct_repo::get_airport_mct(data.database(), &airport_code)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .unwrap_or_default();
+    let global_filters = data.global_mct().connection_building_filters.clone();
 
     match airport {
-        Some(airport) => Ok(HttpResponse::Ok().json(AirportMctResponse {
+        Some(_) => Ok(HttpResponse::Ok().json(AirportMctResponse {
             airport: airport_code,
-            record_count: airport.mct_records.len(),
-            mct_records: airport.mct_records,
-            connection_building_filter_count: airport.connection_building_filters.len(),
-            connection_building_filters: airport.connection_building_filters,
+            record_count: airport_mct.mct_records.len(),
+            mct_records: airport_mct.mct_records,
+            connection_building_filter_count: global_filters.len(),
+            connection_building_filters: global_filters,
         })),
         None => Ok(HttpResponse::NotFound().json(json!({
             "status": "not_found",
@@ -227,19 +244,34 @@ async fn apply_mct_file(
     let mut missing_airports = BTreeSet::new();
     let mut adds_by_airport: HashMap<String, Vec<AirportMctRecord>> = HashMap::new();
     let mut deletes_by_airport: HashMap<String, Vec<AirportMctRecord>> = HashMap::new();
-    let mut filter_airports = BTreeSet::new();
     let mut global_records_applied = 0usize;
+    let mut global_add_records = Vec::new();
+    let mut global_delete_records = Vec::new();
     let merged_filters = merge_connection_building_filters(&parsed);
 
     for record in parsed.records {
+        if is_global_mct_record(&record.data) {
+            global_records_applied += 1;
+            match &content_indicator {
+                MctContentIndicator::Full => {
+                    let _ = upsert_airport_record(&mut global_add_records, record.data.clone());
+                }
+                MctContentIndicator::UpdatesOnly => match record.action_indicator {
+                    Some(MctActionIndicator::Add) => global_add_records.push(record.data.clone()),
+                    Some(MctActionIndicator::Delete) => {
+                        global_delete_records.push(record.data.clone())
+                    }
+                    None => {}
+                },
+            }
+            continue;
+        }
+
         let (targets, missing_targets, is_global) =
             resolve_target_airports(&record.data, &existing_airports);
         missing_airports.extend(missing_targets);
         if is_global {
             global_records_applied += 1;
-        }
-        if record.data.requires_connection_building_filter {
-            filter_airports.extend(targets.iter().cloned());
         }
 
         match &content_indicator {
@@ -273,50 +305,58 @@ async fn apply_mct_file(
 
     if matches!(&content_indicator, MctContentIndicator::Full) {
         log::info!(
-            "Applying full MCT import across {} known airports; {} airports have explicit records and {} merged connection-building filters.",
+            "Applying full MCT import across {} known airports; {} airports have explicit records, {} global records, and {} merged connection-building filters.",
             existing_airports.len(),
             adds_by_airport.len(),
+            global_add_records.len(),
             merged_filters.len()
         );
-        db::repository::airport_repo::clear_all_airport_mct_records(db)
+        db::repository::airport_repo::clear_legacy_airport_mct_fields(db)
             .await
-            .context("failed to clear existing airport MCT payloads before full import")?;
+            .context("failed to clear legacy airport-side MCT fields before full import")?;
+        db::repository::mct_repo::clear_all_airport_mct(db)
+            .await
+            .context("failed to clear airport MCT payloads before full import")?;
+        db::repository::mct_repo::clear_global_mct(db)
+            .await
+            .context("failed to clear global MCT payload before full import")?;
 
         let mut airports_updated = 0usize;
         let mut added_records = 0usize;
-        let mut filter_airports_updated = 0usize;
-        let mut updated_airports = existing_airports.iter().cloned().collect::<Vec<_>>();
+        let filter_airports_updated = 0usize;
+        let mut updated_airports = adds_by_airport.keys().cloned().collect::<Vec<_>>();
         updated_airports.sort();
         for (airport_code, airport_records) in adds_by_airport {
             added_records += airport_records.len();
-            let filters = if filter_airports.contains(&airport_code) {
-                merged_filters.clone()
-            } else {
-                Vec::new()
-            };
             let record_count = airport_records.len();
-            let filter_count = filters.len();
-            if db::repository::airport_repo::set_airport_mct_payload(
-                db,
-                &airport_code,
-                airport_records,
-                filters,
-                true,
-            )
+            let airport_mct = AirportMctData {
+                mct_records: airport_records,
+                connection_building_filters: Vec::new(),
+            };
+            db::repository::mct_repo::set_airport_mct(db, &airport_code, &airport_mct)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to set full-import MCT payload for airport {} (records={})",
+                        airport_code, record_count
+                    )
+                })?;
+            airports_updated += 1;
+        }
+
+        let global_mct = GlobalMctData {
+            mct_records: global_add_records.clone(),
+            connection_building_filters: merged_filters.clone(),
+        };
+        db::repository::mct_repo::set_global_mct(db, &global_mct)
             .await
             .with_context(|| {
                 format!(
-                    "failed to set full-import MCT payload for airport {} (records={}, filters={})",
-                    airport_code, record_count, filter_count
+                    "failed to persist global MCT payload (records={}, filters={})",
+                    global_mct.mct_records.len(),
+                    global_mct.connection_building_filters.len()
                 )
-            })?
-            {
-                airports_updated += 1;
-                if filter_airports.contains(&airport_code) {
-                    filter_airports_updated += 1;
-                }
-            }
-        }
+            })?;
 
         return Ok((
             BulkMctApplySummary {
@@ -344,22 +384,37 @@ async fn apply_mct_file(
     let mut added_records = 0usize;
     let mut replaced_records = 0usize;
     let mut deleted_records = 0usize;
-    let mut filter_airports_updated = 0usize;
+    let filter_airports_updated = 0usize;
     let mut updated_airports = Vec::new();
 
+    let current_global_mct = db::repository::mct_repo::get_global_mct(db)
+        .await
+        .context("failed to load global MCT payload before updates-only apply")?;
+    let mut current_global_records = current_global_mct.mct_records.clone();
+
+    for record in &global_delete_records {
+        deleted_records += remove_airport_record(&mut current_global_records, record);
+    }
+
+    for record in &global_add_records {
+        match upsert_airport_record(&mut current_global_records, record.clone()) {
+            UpsertRecordResult::Added => added_records += 1,
+            UpsertRecordResult::Replaced => replaced_records += 1,
+            UpsertRecordResult::Unchanged => {}
+        }
+    }
+
     for airport_code in affected_airports {
-        let Some(airport) = db::repository::airport_repo::get_airport(db, &airport_code)
+        let mut current_records = db::repository::mct_repo::get_airport_mct(db, &airport_code)
             .await
             .with_context(|| {
                 format!(
-                    "failed to load airport {} before updates-only MCT apply",
+                    "failed to load airport MCT payload for {} before updates-only apply",
                     airport_code
                 )
             })?
-        else {
-            continue;
-        };
-        let mut current_records = airport.mct_records;
+            .unwrap_or_default()
+            .mct_records;
 
         if let Some(records_to_delete) = deletes_by_airport.get(&airport_code) {
             for record in records_to_delete {
@@ -377,36 +432,46 @@ async fn apply_mct_file(
             }
         }
 
-        let update_filters = filter_airports.contains(&airport_code);
-        let filters = if update_filters {
-            merged_filters.clone()
-        } else {
-            airport.connection_building_filters
-        };
-
         let record_count = current_records.len();
-        let filter_count = filters.len();
-        if db::repository::airport_repo::set_airport_mct_payload(
-            db,
-            &airport_code,
-            current_records,
-            filters,
-            update_filters,
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to set updates-only MCT payload for airport {} (records={}, filters={}, update_filters={})",
-                airport_code, record_count, filter_count, update_filters
-            )
-        })?
-        {
-            airports_updated += 1;
-            updated_airports.push(airport_code.clone());
-            if update_filters {
-                filter_airports_updated += 1;
-            }
-        }
+        let airport_mct = AirportMctData {
+            mct_records: current_records,
+            connection_building_filters: Vec::new(),
+        };
+        db::repository::mct_repo::set_airport_mct(db, &airport_code, &airport_mct)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to set updates-only MCT payload for airport {} (records={})",
+                    airport_code, record_count
+                )
+            })?;
+        airports_updated += 1;
+        updated_airports.push(airport_code.clone());
+    }
+
+    let global_connection_building_filters = if merged_filters.is_empty() {
+        current_global_mct.connection_building_filters
+    } else {
+        merged_filters.clone()
+    };
+
+    if !global_add_records.is_empty()
+        || !global_delete_records.is_empty()
+        || !merged_filters.is_empty()
+    {
+        let global_mct = GlobalMctData {
+            mct_records: current_global_records,
+            connection_building_filters: global_connection_building_filters,
+        };
+        db::repository::mct_repo::set_global_mct(db, &global_mct)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to persist updates-only global MCT payload (records={}, filters={})",
+                    global_mct.mct_records.len(),
+                    global_mct.connection_building_filters.len()
+                )
+            })?;
     }
 
     Ok((
@@ -566,27 +631,6 @@ fn remove_airport_record(records: &mut Vec<AirportMctRecord>, record: &AirportMc
     let original_len = records.len();
     records.retain(|existing| existing != record);
     original_len - records.len()
-}
-
-async fn sync_airport_cache<'a, I>(
-    data: &web::Data<WebData>,
-    airport_codes: I,
-) -> Result<(), actix_web::Error>
-where
-    I: IntoIterator<Item = &'a String>,
-{
-    for airport_code in airport_codes {
-        if let Some(airport_row) =
-            db::repository::airport_repo::get_airport(data.database(), airport_code)
-                .await
-                .map_err(actix_web::error::ErrorInternalServerError)?
-        {
-            data.upsert_airport(airport_row)
-                .map_err(actix_web::error::ErrorInternalServerError)?;
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

@@ -1,7 +1,3 @@
-use crate::domain::mct::{
-    AirportMctRecord, ConnectionBuildingFilter, DEFAULT_AIRPORT_MCT_MINUTES,
-    ensure_airport_default_mct_records,
-};
 use chrono_tz::Tz;
 use geo::Point;
 #[derive(Debug)]
@@ -34,8 +30,6 @@ pub struct Airport {
     state: Option<String>,
     location: Point,
     timezone: Tz,
-    mct_records: Vec<AirportMctRecord>,
-    connection_building_filters: Vec<ConnectionBuildingFilter>,
 }
 
 impl Airport {
@@ -48,11 +42,6 @@ impl Airport {
             country: None,
             state: None,
             location: Point::new(longitude, latitude),
-            mct_records: ensure_airport_default_mct_records(
-                Vec::new(),
-                Some(DEFAULT_AIRPORT_MCT_MINUTES),
-            ),
-            connection_building_filters: Vec::new(),
         }
     }
 
@@ -65,8 +54,6 @@ impl Airport {
         state: Option<String>,
         longitude: f64,
         latitude: f64,
-        mct_records: Vec<AirportMctRecord>,
-        connection_building_filters: Vec<ConnectionBuildingFilter>,
     ) -> Self {
         Self {
             id,
@@ -76,8 +63,6 @@ impl Airport {
             country,
             state,
             location: Point::new(longitude, latitude),
-            mct_records,
-            connection_building_filters,
         }
     }
     pub fn id(&self) -> &AirportCode {
@@ -106,13 +91,5 @@ impl Airport {
     }
     pub fn longitude(&self) -> f64 {
         self.location.0.x
-    }
-
-    pub fn mct_records(&self) -> &[AirportMctRecord] {
-        &self.mct_records
-    }
-
-    pub fn connection_building_filters(&self) -> &[ConnectionBuildingFilter] {
-        &self.connection_building_filters
     }
 }

@@ -1,0 +1,18 @@
+{
+  "database":{
+    "host": "49.232.169.62",
+    "port": "8888",
+    "username": "admin",
+    "password": "ceshidem1ma",
+    "namespace": "demo",
+    "dbname": "ItinaryBuilder"
+  },
+  "log":{
+    "level": "error",
+    "file": "./log/itinbuilder.log",
+    "pattern": "{d} - {l} - {m}{n}"
+  },
+  "application": {
+    "port": 8080
+  }
+}

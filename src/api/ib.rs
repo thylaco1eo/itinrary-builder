@@ -12,7 +12,9 @@ use surrealdb_types::{RecordId, RecordIdKey};
 use crate::domain::airport::{Airport, AirportCode};
 use crate::domain::flight::Flightcore;
 use crate::domain::itinerary::Itinerary;
-use crate::domain::mct::{AirportMctRecord, DEFAULT_AIRPORT_MCT_MINUTES};
+use crate::domain::mct::{
+    AirportMctData, AirportMctRecord, GlobalMctData, DEFAULT_AIRPORT_MCT_MINUTES,
+};
 use crate::memory::core::{flight_storage_key, WebData};
 use crate::runtime_paths;
 use crate::Infrastructure::db::model::flight_row::FlightDesignatorRow;
@@ -291,13 +293,22 @@ pub async fn get_ib(
     }
 
     let flights = data.flights();
+    let airport_mct = data.airport_mct();
+    let global_mct = data.global_mct();
     request_info(
         &request_trace,
         "flight_lookup_strategy",
         json!({
             "strategy": "hashmap_by_company_flight_origin_destination_dep_date",
             "flight_count": flights.len(),
-            "max_connection_window_hours": MAX_CONNECTION_WINDOW_HOURS
+            "airport_mct_airport_count": airport_mct.len(),
+            "airport_mct_record_count": airport_mct
+                .values()
+                .map(|payload| payload.mct_records.len())
+                .sum::<usize>(),
+            "max_connection_window_hours": MAX_CONNECTION_WINDOW_HOURS,
+            "global_mct_record_count": global_mct.mct_records.len(),
+            "global_connection_building_filter_count": global_mct.connection_building_filters.len()
         }),
     );
 
@@ -320,6 +331,8 @@ pub async fn get_ib(
             path,
             &flights,
             &airport_cache,
+            &airport_mct,
+            &global_mct,
             dep_date,
             &request_trace,
             path_index + 1,
@@ -438,6 +451,8 @@ fn build_itineraries_for_path<'a>(
     path: &PathResult,
     flights: &'a HashMap<String, Flightcore>,
     airports: &HashMap<String, Airport>,
+    airport_mct: &HashMap<String, AirportMctData>,
+    global_mct: &GlobalMctData,
     dep_date: NaiveDate,
     request_trace: &str,
     path_index: usize,
@@ -458,6 +473,8 @@ fn build_itineraries_for_path<'a>(
         path,
         flights,
         airports,
+        airport_mct,
+        global_mct,
         dep_date,
         0,
         &mut current,
@@ -480,6 +497,8 @@ fn build_combinations<'a>(
     path: &PathResult,
     flights: &'a HashMap<String, Flightcore>,
     airports: &HashMap<String, Airport>,
+    airport_mct: &HashMap<String, AirportMctData>,
+    global_mct: &GlobalMctData,
     dep_date: NaiveDate,
     segment_index: usize,
     current: &mut Vec<&'a Flightcore>,
@@ -507,6 +526,8 @@ fn build_combinations<'a>(
         segment,
         flights,
         airports,
+        airport_mct,
+        global_mct,
         dep_date,
         current,
         segment_index,
@@ -553,7 +574,15 @@ fn build_combinations<'a>(
             }),
         );
 
-        match validate_connection(path, airports, segment_index, current, flight) {
+        match validate_connection(
+            path,
+            airports,
+            airport_mct,
+            global_mct,
+            segment_index,
+            current,
+            flight,
+        ) {
             Ok(()) => {
                 request_info(
                     request_trace,
@@ -570,6 +599,8 @@ fn build_combinations<'a>(
                     path,
                     flights,
                     airports,
+                    airport_mct,
+                    global_mct,
                     dep_date,
                     segment_index + 1,
                     current,
@@ -601,6 +632,8 @@ fn collect_segment_candidates<'a>(
     segment: &Segment,
     flights: &'a HashMap<String, Flightcore>,
     airports: &HashMap<String, Airport>,
+    airport_mct: &HashMap<String, AirportMctData>,
+    global_mct: &GlobalMctData,
     dep_date: NaiveDate,
     current: &[&'a Flightcore],
     segment_index: usize,
@@ -680,7 +713,16 @@ fn collect_segment_candidates<'a>(
         .into_iter()
         .map(|(_, flight)| flight)
         .filter(|flight| {
-            validate_connection(path, airports, segment_index, current, flight).is_ok()
+            validate_connection(
+                path,
+                airports,
+                airport_mct,
+                global_mct,
+                segment_index,
+                current,
+                flight,
+            )
+            .is_ok()
         })
         .collect::<Vec<_>>();
 
@@ -744,6 +786,8 @@ fn lookup_keys_for_segment(
 fn validate_connection(
     _path: &PathResult,
     airports: &HashMap<String, Airport>,
+    airport_mct: &HashMap<String, AirportMctData>,
+    global_mct: &GlobalMctData,
     segment_index: usize,
     current: &[&Flightcore],
     next_flight: &Flightcore,
@@ -762,7 +806,15 @@ fn validate_connection(
     }
 
     let (earliest_departure, latest_departure, effective_mct) =
-        connection_bounds(airports, segment_index, current, next_flight).unwrap();
+        connection_bounds(
+            airports,
+            airport_mct,
+            global_mct,
+            segment_index,
+            current,
+            next_flight,
+        )
+        .unwrap();
 
     if next_flight.dep_local() < &earliest_departure {
         return Err(format!(
@@ -995,6 +1047,8 @@ fn connection_search_window(
 
 fn connection_bounds(
     airports: &HashMap<String, Airport>,
+    airport_mct: &HashMap<String, AirportMctData>,
+    global_mct: &GlobalMctData,
     segment_index: usize,
     current: &[&Flightcore],
     next_flight: &Flightcore,
@@ -1008,7 +1062,13 @@ fn connection_bounds(
     }
 
     let previous_flight = current.get(segment_index - 1)?;
-    let effective_mct = resolve_effective_mct(airports, previous_flight, next_flight);
+    let effective_mct = resolve_effective_mct_with_global(
+        airports,
+        airport_mct,
+        global_mct,
+        previous_flight,
+        next_flight,
+    );
     let earliest_departure =
         previous_flight.arr_local().clone() + Duration::minutes(effective_mct.minutes);
     let latest_departure =
@@ -1017,22 +1077,48 @@ fn connection_bounds(
     Some((earliest_departure, latest_departure, effective_mct))
 }
 
+#[cfg(test)]
 fn resolve_effective_mct(
     airports: &HashMap<String, Airport>,
+    airport_mct: &HashMap<String, AirportMctData>,
+    previous_flight: &Flightcore,
+    next_flight: &Flightcore,
+) -> EffectiveMct {
+    resolve_effective_mct_with_global(
+        airports,
+        airport_mct,
+        &GlobalMctData::default(),
+        previous_flight,
+        next_flight,
+    )
+}
+
+fn resolve_effective_mct_with_global(
+    airports: &HashMap<String, Airport>,
+    airport_mct: &HashMap<String, AirportMctData>,
+    global_mct: &GlobalMctData,
     previous_flight: &Flightcore,
     next_flight: &Flightcore,
 ) -> EffectiveMct {
     let candidate_airports = candidate_transfer_airports(airports, previous_flight, next_flight);
     let status = determine_connection_status(airports, previous_flight, next_flight);
-    let connection_building_filters = candidate_airports
+    let connection_building_filters = global_mct
+        .connection_building_filters
         .iter()
-        .flat_map(|airport| airport.connection_building_filters().iter())
+        .chain(
+            candidate_airports
+                .iter()
+                .filter_map(|airport| airport_mct.get(airport.id().as_str()))
+                .flat_map(|payload| payload.connection_building_filters.iter()),
+        )
         .collect::<Vec<_>>();
 
     if let Some(status) = status.as_deref() {
         let mut matching_records = candidate_airports
             .iter()
-            .flat_map(|airport| airport.mct_records().iter())
+            .filter_map(|airport| airport_mct.get(airport.id().as_str()))
+            .flat_map(|payload| payload.mct_records.iter())
+            .chain(global_mct.mct_records.iter())
             .filter(|record| {
                 matches_mct_record(
                     record,
@@ -1754,7 +1840,7 @@ mod tests {
     use crate::domain::airport::{Airport, AirportCode};
     use crate::domain::flight::Flightcore;
     use crate::domain::mct::{
-        AirportMctRecord, ConnectionBuildingFilter, airport_default_mct_records,
+        AirportMctData, AirportMctRecord, ConnectionBuildingFilter, airport_default_mct_records,
     };
     use chrono::TimeZone;
     use std::collections::HashMap;
@@ -1863,11 +1949,11 @@ mod tests {
     fn structured_mct_record_overrides_baseline_airport_default() {
         let mut fra_records = airport_default_mct_records(180);
         fra_records.push(sample_mct_record("FRA", "FRA", "II", "0130"));
-        let airports = sample_airport_map(fra_records, vec![]);
+        let (airports, airport_mct) = sample_airport_context(fra_records, vec![]);
         let previous = sample_flight("AA", "100", "JFK", "FRA", 8, 0, Some("T1"), Some("T2"));
         let next = sample_flight("LH", "400", "FRA", "MAD", 10, 0, Some("T1"), Some("T1"));
 
-        let effective = resolve_effective_mct(&airports, &previous, &next);
+        let effective = resolve_effective_mct(&airports, &airport_mct, &previous, &next);
 
         assert_eq!(effective.minutes, 90);
         assert_eq!(effective.source, EffectiveMctSource::StructuredRecord);
@@ -1913,7 +1999,7 @@ mod tests {
                 suppression_country: None,
                 suppression_state: None,
             });
-        let airports = sample_airport_map(
+        let (airports, airport_mct) = sample_airport_context(
             fra_records,
             vec![ConnectionBuildingFilter {
                 submitting_carrier: "AA".to_string(),
@@ -1924,8 +2010,8 @@ mod tests {
         let next_allowed = sample_flight("UA", "900", "FRA", "MAD", 13, 0, None, None);
         let next_blocked = sample_flight("LH", "400", "FRA", "MAD", 13, 0, None, None);
 
-        let allowed = resolve_effective_mct(&airports, &previous, &next_allowed);
-        let blocked = resolve_effective_mct(&airports, &previous, &next_blocked);
+        let allowed = resolve_effective_mct(&airports, &airport_mct, &previous, &next_allowed);
+        let blocked = resolve_effective_mct(&airports, &airport_mct, &previous, &next_blocked);
 
         assert_eq!(allowed.minutes, 240);
         assert_eq!(allowed.source, EffectiveMctSource::StructuredRecord);
@@ -1983,11 +2069,11 @@ mod tests {
                 suppression_state: None,
             },
         ]);
-        let airports = sample_airport_map(fra_records, vec![]);
+        let (airports, airport_mct) = sample_airport_context(fra_records, vec![]);
         let previous = sample_flight("AA", "100", "JFK", "FRA", 8, 0, None, None);
         let next = sample_flight("LH", "400", "FRA", "MAD", 10, 0, None, None);
 
-        let effective = resolve_effective_mct(&airports, &previous, &next);
+        let effective = resolve_effective_mct(&airports, &airport_mct, &previous, &next);
 
         assert_eq!(effective.minutes, 90);
         assert_eq!(effective.source, EffectiveMctSource::StructuredRecord);
@@ -2003,11 +2089,11 @@ mod tests {
         {
             fra_records[index] = global_imported;
         }
-        let airports = sample_airport_map(fra_records, vec![]);
+        let (airports, airport_mct) = sample_airport_context(fra_records, vec![]);
         let previous = sample_flight("AA", "100", "JFK", "FRA", 8, 0, None, None);
         let next = sample_flight("LH", "400", "FRA", "MAD", 10, 0, None, None);
 
-        let effective = resolve_effective_mct(&airports, &previous, &next);
+        let effective = resolve_effective_mct(&airports, &airport_mct, &previous, &next);
 
         assert_eq!(effective.minutes, 90);
         assert_eq!(effective.source, EffectiveMctSource::StructuredRecord);
@@ -2018,15 +2104,15 @@ mod tests {
         let airports = HashMap::from([
             (
                 "HNL".to_string(),
-                sample_airport("HNL", "US", "HI", airport_default_mct_records(180), vec![]),
+                sample_airport("HNL", "US", "HI"),
             ),
             (
                 "ITO".to_string(),
-                sample_airport("ITO", "US", "HI", airport_default_mct_records(180), vec![]),
+                sample_airport("ITO", "US", "HI"),
             ),
             (
                 "LAX".to_string(),
-                sample_airport("LAX", "US", "CA", airport_default_mct_records(180), vec![]),
+                sample_airport("LAX", "US", "CA"),
             ),
         ]);
         let previous = sample_flight("WN", "101", "ITO", "HNL", 8, 0, None, None);
@@ -2069,24 +2155,22 @@ mod tests {
             suppression_country: None,
             suppression_state: None,
         };
-        let airports = airports
-            .into_iter()
-            .map(|(code, airport)| {
-                if code == "HNL" {
+        let airport_mct = HashMap::from([(
+            "HNL".to_string(),
+            AirportMctData {
+                mct_records: {
                     let mut hnl_records = airport_default_mct_records(180);
                     hnl_records.push(record.clone());
-                    (
-                        code,
-                        sample_airport("HNL", "US", "HI", hnl_records, vec![]),
-                    )
-                } else {
-                    (code, airport)
-                }
-            })
-            .collect::<HashMap<_, _>>();
+                    hnl_records
+                },
+                connection_building_filters: vec![],
+            },
+        )]);
 
-        let hawaii_effective = resolve_effective_mct(&airports, &previous, &next_hawaii);
-        let california_effective = resolve_effective_mct(&airports, &previous, &next_california);
+        let hawaii_effective =
+            resolve_effective_mct(&airports, &airport_mct, &previous, &next_hawaii);
+        let california_effective =
+            resolve_effective_mct(&airports, &airport_mct, &previous, &next_california);
 
         assert_eq!(hawaii_effective.minutes, 35);
         assert_eq!(
@@ -2200,32 +2284,30 @@ mod tests {
         }
     }
 
-    fn sample_airport_map(
+    fn sample_airport_context(
         fra_records: Vec<AirportMctRecord>,
         fra_filters: Vec<ConnectionBuildingFilter>,
-    ) -> HashMap<String, Airport> {
-        HashMap::from([
-            (
-                "JFK".to_string(),
-                sample_airport("JFK", "US", "NY", airport_default_mct_records(180), vec![]),
-            ),
-            (
+    ) -> (HashMap<String, Airport>, HashMap<String, AirportMctData>) {
+        (
+            HashMap::from([
+                ("JFK".to_string(), sample_airport("JFK", "US", "NY")),
+                ("FRA".to_string(), sample_airport("FRA", "DE", "HE")),
+                ("MAD".to_string(), sample_airport("MAD", "ES", "MD")),
+            ]),
+            HashMap::from([(
                 "FRA".to_string(),
-                sample_airport("FRA", "DE", "HE", fra_records, fra_filters),
-            ),
-            (
-                "MAD".to_string(),
-                sample_airport("MAD", "ES", "MD", airport_default_mct_records(180), vec![]),
-            ),
-        ])
+                AirportMctData {
+                    mct_records: fra_records,
+                    connection_building_filters: fra_filters,
+                },
+            )]),
+        )
     }
 
     fn sample_airport(
         code: &str,
         country: &str,
         state: &str,
-        mct_records: Vec<AirportMctRecord>,
-        connection_building_filters: Vec<ConnectionBuildingFilter>,
     ) -> Airport {
         Airport::new_full(
             AirportCode::new(code).unwrap(),
@@ -2236,8 +2318,6 @@ mod tests {
             Some(state.to_string()),
             0.0,
             0.0,
-            mct_records,
-            connection_building_filters,
         )
     }
 

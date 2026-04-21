@@ -1,7 +1,4 @@
 use crate::domain::airport::{Airport, AirportCode, AirportCodeError};
-use crate::domain::mct::{
-    AirportMctRecord, ConnectionBuildingFilter, ensure_airport_default_mct_records,
-};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::{Kind, SurrealValue, Value};
 
@@ -28,10 +25,6 @@ pub struct AirportRow {
     pub state: Option<String>,
     pub latitude: f64,
     pub longitude: f64,
-    #[serde(default)]
-    pub mct_records: Vec<AirportMctRecord>,
-    #[serde(default)]
-    pub connection_building_filters: Vec<ConnectionBuildingFilter>,
 }
 
 #[derive(Debug)]
@@ -76,8 +69,6 @@ impl TryFrom<AirportRow> for Airport {
             return Err(AirportRowError::InvalidLongitude);
         }
 
-        let mct_records = ensure_airport_default_mct_records(row.mct_records, None);
-
         Ok(Airport::new_full(
             AirportCode::new(row.code.code)?,
             row.timezone.parse()?,
@@ -87,8 +78,6 @@ impl TryFrom<AirportRow> for Airport {
             row.state,
             row.longitude,
             row.latitude,
-            mct_records,
-            row.connection_building_filters,
         ))
     }
 }

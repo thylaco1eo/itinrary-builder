@@ -75,6 +75,16 @@ pub struct ConnectionBuildingFilter {
     pub partner_carrier_codes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
+pub struct GlobalMctData {
+    #[serde(default)]
+    pub mct_records: Vec<AirportMctRecord>,
+    #[serde(default)]
+    pub connection_building_filters: Vec<ConnectionBuildingFilter>,
+}
+
+pub type AirportMctData = GlobalMctData;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
 pub struct AirportMctRecord {
     pub arrival_station: Option<String>,
@@ -301,6 +311,10 @@ impl AirportMctRecord {
             && self.suppression_country == other.suppression_country
             && self.suppression_state == other.suppression_state
     }
+}
+
+pub fn is_global_mct_record(record: &AirportMctRecord) -> bool {
+    record.arrival_station.is_none() && record.departure_station.is_none()
 }
 
 pub fn ensure_airport_default_mct_records(
