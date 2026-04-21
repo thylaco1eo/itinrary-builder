@@ -3,8 +3,10 @@ use std::time::{Duration, Instant};
 use crate::domain::route::Route;
 use crate::Infrastructure::db::model::flight_row::{FlightCacheRow, FlightRow};
 use actix_web::rt::time::timeout;
+use surrealdb::method::Transaction;
 use surrealdb::engine::any::Any;
-use surrealdb::Surreal;
+use surrealdb::{Connection, Surreal};
+use surrealdb_types::SurrealValue;
 
 const PRODUCTION_FLIGHT_TABLE: &str = "flight";
 const PRODUCTION_ROUTE_TABLE: &str = "route";
@@ -16,6 +18,8 @@ const MIN_FLIGHT_BATCH_SIZE: usize = 250;
 const INITIAL_FLIGHT_IMPORT_CHUNK_SIZE: usize = 2_000;
 const MIN_FLIGHT_IMPORT_CHUNK_SIZE: usize = 125;
 const ROUTE_IMPORT_CHUNK_SIZE: usize = 2_000;
+const FLIGHT_PROMOTION_CHUNK_SIZE: usize = 5_000;
+const ROUTE_PROMOTION_CHUNK_SIZE: usize = 5_000;
 
 pub fn temp_flight_table() -> &'static str {
     TEMP_FLIGHT_TABLE
@@ -43,28 +47,31 @@ pub async fn load_schedule_tmp(
 pub async fn promote_tmp_to_production(db: &Surreal<Any>) -> surrealdb::Result<()> {
     let switch_started = Instant::now();
     let transaction = db.clone().begin().await?;
-    let promote_sql = format!(
-        "DELETE {prod_flight};\
-DELETE {prod_route};\
-INSERT INTO {prod_flight} (SELECT * FROM {tmp_flight});\
-INSERT RELATION INTO {prod_route} (SELECT * FROM {tmp_route});",
-        prod_flight = PRODUCTION_FLIGHT_TABLE,
-        prod_route = PRODUCTION_ROUTE_TABLE,
-        tmp_flight = TEMP_FLIGHT_TABLE,
-        tmp_route = TEMP_ROUTE_TABLE,
-    );
 
-    let response = match transaction.query(promote_sql).await {
-        Ok(response) => response,
-        Err(error) => {
-            let _ = transaction.cancel().await;
-            return Err(error);
-        }
-    };
-
-    if let Err(error) = response.check() {
+    if let Err(error) = promote_table_in_chunks(
+        &transaction,
+        PRODUCTION_FLIGHT_TABLE,
+        TEMP_FLIGHT_TABLE,
+        FLIGHT_PROMOTION_CHUNK_SIZE,
+        false,
+    )
+    .await
+    {
         let _ = transaction.cancel().await;
-        return Err(error.into());
+        return Err(error);
+    }
+
+    if let Err(error) = promote_table_in_chunks(
+        &transaction,
+        PRODUCTION_ROUTE_TABLE,
+        TEMP_ROUTE_TABLE,
+        ROUTE_PROMOTION_CHUNK_SIZE,
+        true,
+    )
+    .await
+    {
+        let _ = transaction.cancel().await;
+        return Err(error);
     }
 
     transaction.commit().await?;
@@ -156,6 +163,70 @@ async fn clear_schedule_tables(
         .await?;
     response.check()?;
     Ok(())
+}
+
+async fn promote_table_in_chunks(
+    transaction: &Transaction<impl Connection>,
+    production_table: &str,
+    temp_table: &str,
+    chunk_size: usize,
+    is_relation: bool,
+) -> surrealdb::Result<()> {
+    let started = Instant::now();
+    let clear_response = transaction
+        .query(format!("DELETE {production_table};"))
+        .await?;
+    clear_response.check()?;
+
+    let count_sql = format!("SELECT count() AS total FROM {temp_table} GROUP ALL;");
+    let mut count_response = transaction.query(count_sql).await?;
+    let total = count_response
+        .take::<Vec<PromotionCountRow>>(0)?
+        .into_iter()
+        .next()
+        .map(|row| row.total)
+        .unwrap_or(0);
+
+    if total == 0 {
+        println!(
+            "Promotion skipped for {} because {} is empty.",
+            production_table, temp_table
+        );
+        return Ok(());
+    }
+
+    let insert_keyword = if is_relation {
+        "INSERT RELATION INTO"
+    } else {
+        "INSERT INTO"
+    };
+
+    let mut inserted = 0usize;
+    while inserted < total {
+        let promote_sql = format!(
+            "{insert_keyword} {production_table} (SELECT * FROM {temp_table} START {inserted} LIMIT {chunk_size}) RETURN NONE;"
+        );
+        let response = transaction.query(promote_sql).await?;
+        response.check()?;
+        inserted = (inserted + chunk_size).min(total);
+
+        if inserted % 10_000 == 0 || inserted == total {
+            println!(
+                "Production promotion progress for {}: {}/{} rows copied in {:?}.",
+                production_table,
+                inserted,
+                total,
+                started.elapsed()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, surrealdb_types::SurrealValue)]
+struct PromotionCountRow {
+    total: usize,
 }
 
 fn is_message_too_long(error: &surrealdb::Error) -> bool {
