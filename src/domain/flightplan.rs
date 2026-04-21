@@ -123,14 +123,7 @@ pub fn expand_for_table(plan: &FlightPlan, table: &str) -> Vec<FlightRow> {
     let mut rows = Vec::new();
     let mut date = plan.start_date;
 
-    let limit_date = plan.start_date + Duration::days(60);
-    let end_date = if plan.end_date < limit_date {
-        plan.end_date
-    } else {
-        limit_date
-    };
-
-    while date <= end_date {
+    while date <= plan.end_date {
         if operates_on_date(plan, date) {
             rows.push(FlightRow::from_plan_for_table(plan, date, table));
         }
@@ -146,7 +139,7 @@ mod tests {
     use chrono::{Duration, NaiveDate, NaiveTime};
 
     #[test]
-    fn test_expand_limit_60_days() {
+    fn test_expand_full_date_range_without_import_cap() {
         let plan = FlightPlan {
             company: "AA".to_string(),
             flight_no: "123".to_string(),
@@ -156,7 +149,7 @@ mod tests {
             arr_time: NaiveTime::from_hms_opt(13, 0, 0).unwrap(),
             block_time: Duration::hours(3),
             start_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(), // 60 days
+            end_date: NaiveDate::from_ymd_opt(2026, 4, 15).unwrap(),
             weekdays: [true; 7],
             frequency_rate: None,
             dep_tz: "+0000".to_string(),
@@ -176,11 +169,10 @@ mod tests {
         };
 
         let rows = expand(&plan);
-        // Expansion is capped at 60 days from the schedule start date.
         assert_eq!(
             rows.len(),
-            60,
-            "Should expand exactly 60 days when the end date exceeds the import cap"
+            105,
+            "Expansion should cover the full schedule date range"
         );
         assert_eq!(
             rows.first().unwrap().dep_local.date_naive(),
@@ -188,7 +180,7 @@ mod tests {
         );
         assert_eq!(
             rows.last().unwrap().dep_local.date_naive(),
-            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
+            NaiveDate::from_ymd_opt(2026, 4, 15).unwrap()
         );
     }
 
