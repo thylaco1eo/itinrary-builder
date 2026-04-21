@@ -1,3 +1,7 @@
+use std::env;
+use std::time::Duration;
+
+use actix_web::rt::time::timeout;
 use crate::domain::mct::{AirportMctData, GlobalMctData};
 use crate::Infrastructure::db::model::mct_row::MctRow;
 use surrealdb::engine::any::Any;
@@ -6,6 +10,9 @@ use surrealdb::Error as SurrealError;
 use surrealdb_types::RecordIdKey;
 
 const GLOBAL_MCT_RECORD_ID: &str = "global";
+const DEFAULT_AIRPORT_MCT_PRELOAD_BATCH_SIZE: usize = 25;
+const DEFAULT_AIRPORT_MCT_PRELOAD_MIN_BATCH_SIZE: usize = 5;
+const DEFAULT_AIRPORT_MCT_PRELOAD_TIMEOUT_SECS: u64 = 30;
 
 pub async fn get_airport_mct(
     db: &Surreal<Any>,
@@ -21,24 +28,61 @@ pub async fn get_airport_mct(
 pub async fn get_all_airport_mct(
     db: &Surreal<Any>,
 ) -> surrealdb::Result<Vec<(String, AirportMctData)>> {
-    let mut response = match db.query("SELECT * FROM mct").await {
-        Ok(response) => response,
-        Err(error) if is_missing_mct_table_error(&error) => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let rows: Vec<MctRow> = response.take(0)?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| {
+    let mut airport_mct = Vec::new();
+    let mut start = 0usize;
+    let mut batch_size = airport_mct_preload_batch_size();
+    let min_batch_size = airport_mct_preload_min_batch_size(batch_size);
+    let timeout_secs = airport_mct_preload_timeout_secs();
+
+    loop {
+        let sql = format!(
+            "SELECT id, mct_records, connection_building_filters \
+             FROM mct \
+             WHERE id != type::record('mct','{global_id}') \
+             START {start} LIMIT {batch_size}",
+            global_id = GLOBAL_MCT_RECORD_ID,
+            start = start,
+            batch_size = batch_size
+        );
+
+        let mut response = match timeout(Duration::from_secs(timeout_secs), db.query(&sql)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) if is_missing_mct_table_error(&error) => return Ok(Vec::new()),
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                if batch_size > min_batch_size {
+                    batch_size = (batch_size / 2).max(min_batch_size);
+                    continue;
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "airport MCT batch query timed out after {}s at offset {}",
+                        timeout_secs, start
+                    ),
+                )
+                .into());
+            }
+        };
+
+        let rows: Vec<MctRow> = response.take(0)?;
+        let row_count = rows.len();
+
+        airport_mct.extend(rows.into_iter().filter_map(|row| {
             let RecordIdKey::String(code) = &row.id.key else {
                 return None;
             };
-            if code == GLOBAL_MCT_RECORD_ID {
-                return None;
-            }
             Some((code.clone(), mct_row_payload(row)))
-        })
-        .collect())
+        }));
+
+        if row_count < batch_size {
+            break;
+        }
+
+        start += row_count;
+    }
+
+    Ok(airport_mct)
 }
 
 pub async fn set_airport_mct(
@@ -78,11 +122,17 @@ pub async fn set_airport_mct(
 }
 
 pub async fn clear_all_airport_mct(db: &Surreal<Any>) -> surrealdb::Result<()> {
-    let rows = get_all_airport_mct(db).await?;
-    for (code, _) in rows {
-        let _: Option<MctRow> = db.delete(("mct", code)).await?;
+    match db
+        .query(format!(
+            "DELETE mct WHERE id != type::record('mct','{}')",
+            GLOBAL_MCT_RECORD_ID
+        ))
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) if is_missing_mct_table_error(&error) => Ok(()),
+        Err(error) => Err(error),
     }
-    Ok(())
 }
 
 pub async fn get_global_mct(db: &Surreal<Any>) -> surrealdb::Result<GlobalMctData> {
@@ -145,4 +195,28 @@ fn is_missing_mct_table_error(error: &SurrealError) -> bool {
         || message.contains("table \"mct\" does not exist")
         || message.contains("The table 'mct' does not exist")
         || message.contains("The table \"mct\" does not exist")
+}
+
+fn airport_mct_preload_batch_size() -> usize {
+    env::var("IB_AIRPORT_MCT_PRELOAD_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_AIRPORT_MCT_PRELOAD_BATCH_SIZE)
+}
+
+fn airport_mct_preload_min_batch_size(initial_batch_size: usize) -> usize {
+    env::var("IB_AIRPORT_MCT_PRELOAD_MIN_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0 && *value <= initial_batch_size)
+        .unwrap_or(DEFAULT_AIRPORT_MCT_PRELOAD_MIN_BATCH_SIZE.min(initial_batch_size))
+}
+
+fn airport_mct_preload_timeout_secs() -> u64 {
+    env::var("IB_AIRPORT_MCT_PRELOAD_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_AIRPORT_MCT_PRELOAD_TIMEOUT_SECS)
 }
