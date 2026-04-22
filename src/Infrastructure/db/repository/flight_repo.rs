@@ -203,8 +203,13 @@ async fn promote_table_in_chunks(
 
     let mut inserted = 0usize;
     while inserted < total {
-        let promote_sql = format!(
-            "{insert_keyword} {production_table} (SELECT * FROM {temp_table} START {inserted} LIMIT {chunk_size}) RETURN NONE;"
+        let promote_sql = build_promotion_chunk_sql(
+            production_table,
+            temp_table,
+            inserted,
+            chunk_size,
+            is_relation,
+            insert_keyword,
         );
         let response = transaction.query(promote_sql).await?;
         response.check()?;
@@ -222,6 +227,25 @@ async fn promote_table_in_chunks(
     }
 
     Ok(())
+}
+
+fn build_promotion_chunk_sql(
+    production_table: &str,
+    temp_table: &str,
+    inserted: usize,
+    chunk_size: usize,
+    is_relation: bool,
+    insert_keyword: &str,
+) -> String {
+    if is_relation {
+        format!(
+            "{insert_keyword} {production_table} (SELECT VALUE {{ id: string::split(<string>id, ':')[1], in: in, out: out, flights: flights, companies: companies }} FROM {temp_table} START {inserted} LIMIT {chunk_size}) RETURN NONE;"
+        )
+    } else {
+        format!(
+            "{insert_keyword} {production_table} (SELECT * FROM {temp_table} START {inserted} LIMIT {chunk_size}) RETURN NONE;"
+        )
+    }
 }
 
 #[derive(Debug, surrealdb_types::SurrealValue)]
@@ -344,4 +368,25 @@ pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightCacheRow> {
         started.elapsed()
     );
     flights
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_promotion_chunk_sql;
+
+    #[test]
+    fn relation_promotion_rewrites_tmp_record_ids_to_local_ids() {
+        let sql = build_promotion_chunk_sql(
+            "route",
+            "route_tmp",
+            0,
+            5000,
+            true,
+            "INSERT RELATION INTO",
+        );
+
+        assert!(sql.contains("INSERT RELATION INTO route"));
+        assert!(sql.contains("id: string::split(<string>id, ':')[1]"));
+        assert!(sql.contains("FROM route_tmp START 0 LIMIT 5000"));
+    }
 }
