@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use crate::domain::route::Route;
 use crate::Infrastructure::db::model::flight_row::{FlightCacheRow, FlightRow};
 use actix_web::rt::time::timeout;
-use surrealdb::method::Transaction;
 use surrealdb::engine::any::Any;
+use surrealdb::method::Transaction;
 use surrealdb::{Connection, Surreal};
 use surrealdb_types::SurrealValue;
 
@@ -111,7 +111,9 @@ async fn insert_flight_rows(
                     );
                 }
             }
-            Err(error) if is_message_too_long(&error) && chunk_size > MIN_FLIGHT_IMPORT_CHUNK_SIZE => {
+            Err(error)
+                if is_message_too_long(&error) && chunk_size > MIN_FLIGHT_IMPORT_CHUNK_SIZE =>
+            {
                 let next_chunk_size = (chunk_size / 2).max(MIN_FLIGHT_IMPORT_CHUNK_SIZE);
                 eprintln!(
                     "Flight import chunk was too large for table {} at offset {}. Reducing chunk size {} -> {}.",
@@ -262,7 +264,10 @@ pub async fn get_flights(db: &Surreal<Any>) -> Vec<FlightCacheRow> {
     let probe_started = Instant::now();
     match timeout(
         Duration::from_secs(10),
-        db.query(format!("SELECT id FROM {} LIMIT 1", PRODUCTION_FLIGHT_TABLE)),
+        db.query(format!(
+            "SELECT id FROM {} LIMIT 1",
+            PRODUCTION_FLIGHT_TABLE
+        )),
     )
     .await
     {
@@ -376,14 +381,8 @@ mod tests {
 
     #[test]
     fn relation_promotion_rewrites_tmp_record_ids_to_local_ids() {
-        let sql = build_promotion_chunk_sql(
-            "route",
-            "route_tmp",
-            0,
-            5000,
-            true,
-            "INSERT RELATION INTO",
-        );
+        let sql =
+            build_promotion_chunk_sql("route", "route_tmp", 0, 5000, true, "INSERT RELATION INTO");
 
         assert!(sql.contains("INSERT RELATION INTO route"));
         assert!(sql.contains("id: string::split(<string>id, ':')[1]"));

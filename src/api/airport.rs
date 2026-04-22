@@ -1,8 +1,7 @@
-use anyhow::Context;
 use crate::domain::airport::Airport;
 use crate::domain::mct::{
-    AirportMctData, AirportMctRecord, ConnectionBuildingFilter, MctActionIndicator,
-    MctContentIndicator, ParsedMctFile, GlobalMctData, is_global_mct_record,
+    is_global_mct_record, AirportMctData, AirportMctRecord, ConnectionBuildingFilter,
+    GlobalMctData, MctActionIndicator, MctContentIndicator, ParsedMctFile,
 };
 use crate::memory::core::WebData;
 use crate::Infrastructure::db;
@@ -11,6 +10,7 @@ use crate::Infrastructure::db::model::airport_row::AirportRowError;
 use crate::Infrastructure::file_loader::mct_parser::MctParser;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::{get, post, put, web, HttpResponse};
+use anyhow::Context;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -152,10 +152,11 @@ pub async fn put_airport_mct(
         }
     };
 
-    let current_airport_mct = db::repository::mct_repo::get_airport_mct(data.database(), &airport_code)
-        .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
-        .unwrap_or_default();
+    let current_airport_mct =
+        db::repository::mct_repo::get_airport_mct(data.database(), &airport_code)
+            .await
+            .map_err(actix_web::error::ErrorInternalServerError)?
+            .unwrap_or_default();
     let mut mct_records = current_airport_mct.mct_records;
     let upsert_result = upsert_airport_record(&mut mct_records, record);
     let airport_mct = AirportMctData {
@@ -163,13 +164,9 @@ pub async fn put_airport_mct(
         connection_building_filters: Vec::new(),
     };
 
-    db::repository::mct_repo::set_airport_mct(
-        data.database(),
-        &airport_code,
-        &airport_mct,
-    )
-    .await
-    .map_err(actix_web::error::ErrorInternalServerError)?;
+    db::repository::mct_repo::set_airport_mct(data.database(), &airport_code, &airport_mct)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     db::repository::airport_repo::clear_legacy_airport_mct_fields_for_airport(
         data.database(),
         &airport_code,

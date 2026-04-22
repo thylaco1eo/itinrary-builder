@@ -55,17 +55,12 @@ pub async fn add_schedule(
     );
 
     let db_started = Instant::now();
-    if let Err(error) = flight_repo::load_schedule_tmp(
-        data.database(),
-        &staged.flight_rows,
-        &staged.route_rows,
-    )
-    .await
+    if let Err(error) =
+        flight_repo::load_schedule_tmp(data.database(), &staged.flight_rows, &staged.route_rows)
+            .await
     {
-        return Ok(HttpResponse::InternalServerError().body(format!(
-            "Tmp schedule load failed: {}",
-            error
-        )));
+        return Ok(HttpResponse::InternalServerError()
+            .body(format!("Tmp schedule load failed: {}", error)));
     }
     let db_duration = db_started.elapsed();
 
@@ -133,11 +128,9 @@ fn stage_schedule_import(file: File) -> Result<StagedScheduleImport, String> {
                     &mut flight_rows,
                     &mut seen_flight_row_ids,
                     &mut duplicate_flight_rows_skipped,
-                    plans
-                        .iter()
-                        .flat_map(|plan| {
-                            flightplan::expand_for_table(plan, flight_repo::temp_flight_table())
-                        }),
+                    plans.iter().flat_map(|plan| {
+                        flightplan::expand_for_table(plan, flight_repo::temp_flight_table())
+                    }),
                 );
                 accumulate_route_updates(&mut route_accumulators, &plans);
                 build_duration += start_build.elapsed();
@@ -280,7 +273,12 @@ mod tests {
         assert_eq!(duplicate_count, 1);
     }
 
-    fn sample_plan(company: &str, flight_no: &str, origin: &str, destination: &str) -> crate::domain::flightplan::FlightPlan {
+    fn sample_plan(
+        company: &str,
+        flight_no: &str,
+        origin: &str,
+        destination: &str,
+    ) -> crate::domain::flightplan::FlightPlan {
         crate::domain::flightplan::FlightPlan {
             company: company.to_string(),
             flight_no: flight_no.to_string(),
@@ -296,11 +294,12 @@ mod tests {
             dep_tz: "+0800".to_string(),
             arr_tz: "+0800".to_string(),
             arrival_day_offset: 0,
-            operating_designator: crate::Infrastructure::db::model::flight_row::FlightDesignatorRow {
-                company: company.to_string(),
-                flight_number: flight_no.to_string(),
-                operational_suffix: None,
-            },
+            operating_designator:
+                crate::Infrastructure::db::model::flight_row::FlightDesignatorRow {
+                    company: company.to_string(),
+                    flight_number: flight_no.to_string(),
+                    operational_suffix: None,
+                },
             duplicate_designators: vec![],
             joint_operation_airline_designators: vec![],
             meal_service_note: None,

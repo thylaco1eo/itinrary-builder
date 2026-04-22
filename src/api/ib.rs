@@ -96,6 +96,59 @@ struct ItineraryResponse {
     transfer_count: u32,
 }
 
+struct SameFlightExpansionCache<'a> {
+    groups: HashMap<String, Vec<&'a Flightcore>>,
+    expansions: HashMap<String, Vec<&'a Flightcore>>,
+}
+
+impl<'a> SameFlightExpansionCache<'a> {
+    fn new(all_flights: &'a HashMap<String, Flightcore>) -> Self {
+        let mut groups: HashMap<String, Vec<&'a Flightcore>> = HashMap::new();
+
+        for flight in all_flights.values() {
+            groups
+                .entry(same_operating_flight_key(flight))
+                .or_default()
+                .push(flight);
+        }
+
+        Self {
+            groups,
+            expansions: HashMap::new(),
+        }
+    }
+
+    fn expand(&mut self, flight: &'a Flightcore) -> Vec<&'a Flightcore> {
+        let signature = flight_signature(flight);
+        if let Some(cached) = self.expansions.get(&signature) {
+            return cached.clone();
+        }
+
+        let group = self
+            .groups
+            .get(&same_operating_flight_key(flight))
+            .cloned()
+            .unwrap_or_default();
+        let candidates = group
+            .into_iter()
+            .filter(|candidate| is_subflight_candidate(flight, candidate))
+            .collect::<Vec<_>>();
+
+        let expanded = if let Some(path) = find_same_flight_path(flight, &candidates) {
+            let mut expanded = Vec::new();
+            for subflight in path {
+                expanded.extend(self.expand(subflight));
+            }
+            expanded
+        } else {
+            vec![flight]
+        };
+
+        self.expansions.insert(signature, expanded.clone());
+        expanded
+    }
+}
+
 #[get("/ib")]
 pub async fn get_ib(
     data: web::Data<WebData>,
@@ -295,6 +348,7 @@ pub async fn get_ib(
     let flights = data.flights();
     let airport_mct = data.airport_mct();
     let global_mct = data.global_mct();
+    let mut same_flight_cache = SameFlightExpansionCache::new(&flights);
     request_info(
         &request_trace,
         "flight_lookup_strategy",
@@ -338,7 +392,7 @@ pub async fn get_ib(
             path_index + 1,
         );
         for combination in combinations {
-            let expanded_segments = expand_itinerary_segments(&combination, &flights);
+            let expanded_segments = expand_itinerary_segments(&combination, &mut same_flight_cache);
             let effective_transport_count = transfer_count(&expanded_segments);
             if effective_transport_count > u32::from(max_transports) {
                 request_info(
@@ -574,56 +628,31 @@ fn build_combinations<'a>(
             }),
         );
 
-        match validate_connection(
+        request_info(
+            request_trace,
+            "candidate_accepted",
+            json!({
+                "path_index": path_index,
+                "segment_index": segment_index + 1,
+                "segment_count": segment_count,
+                "candidate": flight_json(flight)
+            }),
+        );
+        current.push(flight);
+        build_combinations(
             path,
+            flights,
             airports,
             airport_mct,
             global_mct,
-            segment_index,
+            dep_date,
+            segment_index + 1,
             current,
-            flight,
-        ) {
-            Ok(()) => {
-                request_info(
-                    request_trace,
-                    "candidate_accepted",
-                    json!({
-                        "path_index": path_index,
-                        "segment_index": segment_index + 1,
-                        "segment_count": segment_count,
-                        "candidate": flight_json(flight)
-                    }),
-                );
-                current.push(flight);
-                build_combinations(
-                    path,
-                    flights,
-                    airports,
-                    airport_mct,
-                    global_mct,
-                    dep_date,
-                    segment_index + 1,
-                    current,
-                    results,
-                    request_trace,
-                    path_index,
-                );
-                current.pop();
-            }
-            Err(reason) => {
-                request_info(
-                    request_trace,
-                    "candidate_rejected",
-                    json!({
-                        "path_index": path_index,
-                        "segment_index": segment_index + 1,
-                        "segment_count": segment_count,
-                        "candidate": flight_json(flight),
-                        "reason": reason
-                    }),
-                );
-            }
-        }
+            results,
+            request_trace,
+            path_index,
+        );
+        current.pop();
     }
 }
 
@@ -805,16 +834,15 @@ fn validate_connection(
         ));
     }
 
-    let (earliest_departure, latest_departure, effective_mct) =
-        connection_bounds(
-            airports,
-            airport_mct,
-            global_mct,
-            segment_index,
-            current,
-            next_flight,
-        )
-        .unwrap();
+    let (earliest_departure, latest_departure, effective_mct) = connection_bounds(
+        airports,
+        airport_mct,
+        global_mct,
+        segment_index,
+        current,
+        next_flight,
+    )
+    .unwrap();
 
     if next_flight.dep_local() < &earliest_departure {
         return Err(format!(
@@ -844,14 +872,18 @@ fn same_operating_flight(left: &Flightcore, right: &Flightcore) -> bool {
     left.company() == right.company() && left.flight_id() == right.flight_id()
 }
 
+fn same_operating_flight_key(flight: &Flightcore) -> String {
+    format!("{}:{}", flight.company(), flight.flight_id())
+}
+
 fn expand_itinerary_segments<'a>(
     flights: &[&'a Flightcore],
-    all_flights: &'a HashMap<String, Flightcore>,
+    same_flight_cache: &mut SameFlightExpansionCache<'a>,
 ) -> Vec<&'a Flightcore> {
     let mut expanded = Vec::new();
 
     for flight in flights {
-        expanded.extend(expand_flight_segments(flight, all_flights));
+        expanded.extend(same_flight_cache.expand(flight));
     }
 
     expanded
@@ -861,20 +893,8 @@ fn expand_flight_segments<'a>(
     flight: &'a Flightcore,
     all_flights: &'a HashMap<String, Flightcore>,
 ) -> Vec<&'a Flightcore> {
-    let candidates = all_flights
-        .values()
-        .filter(|candidate| is_subflight_candidate(flight, candidate))
-        .collect::<Vec<_>>();
-
-    let Some(path) = find_same_flight_path(flight, &candidates) else {
-        return vec![flight];
-    };
-
-    let mut expanded = Vec::new();
-    for subflight in path {
-        expanded.extend(expand_flight_segments(subflight, all_flights));
-    }
-    expanded
+    let mut same_flight_cache = SameFlightExpansionCache::new(all_flights);
+    same_flight_cache.expand(flight)
 }
 
 fn is_subflight_candidate(parent: &Flightcore, candidate: &Flightcore) -> bool {
@@ -1147,9 +1167,10 @@ fn resolve_effective_mct_with_global(
             if record.suppression_indicator {
                 continue;
             }
-            if suppression_records.iter().any(|suppression| {
-                suppression_applies_to_record(suppression, record)
-            }) {
+            if suppression_records
+                .iter()
+                .any(|suppression| suppression_applies_to_record(suppression, record))
+            {
                 continue;
             }
             if let Some(minutes) = parse_mct_minutes(record.time.as_deref()) {
@@ -1840,7 +1861,7 @@ mod tests {
     use crate::domain::airport::{Airport, AirportCode};
     use crate::domain::flight::Flightcore;
     use crate::domain::mct::{
-        AirportMctData, AirportMctRecord, ConnectionBuildingFilter, airport_default_mct_records,
+        airport_default_mct_records, AirportMctData, AirportMctRecord, ConnectionBuildingFilter,
     };
     use chrono::TimeZone;
     use std::collections::HashMap;
@@ -1963,42 +1984,42 @@ mod tests {
     fn connection_building_filter_limits_global_interline_default() {
         let mut fra_records = airport_default_mct_records(180);
         fra_records.push(AirportMctRecord {
-                arrival_station: None,
-                time: Some("0400".to_string()),
-                status: "II".to_string(),
-                departure_station: None,
-                requires_connection_building_filter: true,
-                arrival_carrier: None,
-                arrival_codeshare_indicator: false,
-                arrival_codeshare_operating_carrier: None,
-                departure_carrier: None,
-                departure_codeshare_indicator: false,
-                departure_codeshare_operating_carrier: None,
-                arrival_aircraft_type: None,
-                arrival_aircraft_body: None,
-                departure_aircraft_type: None,
-                departure_aircraft_body: None,
-                arrival_terminal: None,
-                departure_terminal: None,
-                previous_country: None,
-                previous_station: None,
-                next_country: None,
-                next_station: None,
-                arrival_flight_number_range_start: None,
-                arrival_flight_number_range_end: None,
-                departure_flight_number_range_start: None,
-                departure_flight_number_range_end: None,
-                previous_state: None,
-                next_state: None,
-                previous_region: None,
-                next_region: None,
-                effective_from_local: None,
-                effective_to_local: None,
-                suppression_indicator: false,
-                suppression_region: None,
-                suppression_country: None,
-                suppression_state: None,
-            });
+            arrival_station: None,
+            time: Some("0400".to_string()),
+            status: "II".to_string(),
+            departure_station: None,
+            requires_connection_building_filter: true,
+            arrival_carrier: None,
+            arrival_codeshare_indicator: false,
+            arrival_codeshare_operating_carrier: None,
+            departure_carrier: None,
+            departure_codeshare_indicator: false,
+            departure_codeshare_operating_carrier: None,
+            arrival_aircraft_type: None,
+            arrival_aircraft_body: None,
+            departure_aircraft_type: None,
+            departure_aircraft_body: None,
+            arrival_terminal: None,
+            departure_terminal: None,
+            previous_country: None,
+            previous_station: None,
+            next_country: None,
+            next_station: None,
+            arrival_flight_number_range_start: None,
+            arrival_flight_number_range_end: None,
+            departure_flight_number_range_start: None,
+            departure_flight_number_range_end: None,
+            previous_state: None,
+            next_state: None,
+            previous_region: None,
+            next_region: None,
+            effective_from_local: None,
+            effective_to_local: None,
+            suppression_indicator: false,
+            suppression_region: None,
+            suppression_country: None,
+            suppression_state: None,
+        });
         let (airports, airport_mct) = sample_airport_context(
             fra_records,
             vec![ConnectionBuildingFilter {
@@ -2102,18 +2123,9 @@ mod tests {
     #[test]
     fn state_scoped_mct_records_match_airport_state_codes() {
         let airports = HashMap::from([
-            (
-                "HNL".to_string(),
-                sample_airport("HNL", "US", "HI"),
-            ),
-            (
-                "ITO".to_string(),
-                sample_airport("ITO", "US", "HI"),
-            ),
-            (
-                "LAX".to_string(),
-                sample_airport("LAX", "US", "CA"),
-            ),
+            ("HNL".to_string(), sample_airport("HNL", "US", "HI")),
+            ("ITO".to_string(), sample_airport("ITO", "US", "HI")),
+            ("LAX".to_string(), sample_airport("LAX", "US", "CA")),
         ]);
         let previous = sample_flight("WN", "101", "ITO", "HNL", 8, 0, None, None);
         let next_hawaii = sample_flight("WN", "202", "HNL", "ITO", 10, 0, None, None);
@@ -2304,11 +2316,7 @@ mod tests {
         )
     }
 
-    fn sample_airport(
-        code: &str,
-        country: &str,
-        state: &str,
-    ) -> Airport {
+    fn sample_airport(code: &str, country: &str, state: &str) -> Airport {
         Airport::new_full(
             AirportCode::new(code).unwrap(),
             chrono_tz::UTC,

@@ -1,12 +1,12 @@
 use std::env;
 use std::time::Duration;
 
-use actix_web::rt::time::timeout;
 use crate::domain::mct::{AirportMctData, GlobalMctData};
 use crate::Infrastructure::db::model::mct_row::MctRow;
+use actix_web::rt::time::timeout;
 use surrealdb::engine::any::Any;
-use surrealdb::Surreal;
 use surrealdb::Error as SurrealError;
+use surrealdb::Surreal;
 use surrealdb_types::RecordIdKey;
 
 const GLOBAL_MCT_RECORD_ID: &str = "global";

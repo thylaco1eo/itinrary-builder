@@ -42,7 +42,10 @@ impl WebData {
         let airport_mct = match get_all_airport_mct(&data_base).await {
             Ok(airport_mct) => airport_mct.into_iter().collect::<HashMap<_, _>>(),
             Err(error) => {
-                eprintln!("Failed to load airport MCT payloads from database: {}", error);
+                eprintln!(
+                    "Failed to load airport MCT payloads from database: {}",
+                    error
+                );
                 HashMap::new()
             }
         };
@@ -117,7 +120,8 @@ impl WebData {
         let airport_mct_map_bytes = estimate_airport_mct_map_bytes(&airport_mct);
         let flight_map_bytes = estimate_flight_map_bytes(&flights);
         let global_mct_bytes = estimate_mct_payload_bytes(&global_mct);
-        let retained_bytes = airport_map_bytes + airport_mct_map_bytes + global_mct_bytes + flight_map_bytes;
+        let retained_bytes =
+            airport_map_bytes + airport_mct_map_bytes + global_mct_bytes + flight_map_bytes;
         let startup_peak_bytes = retained_bytes + flight_row_buffer_bytes;
         println!(
             "Approximate memory usage: airport row buffer ~= {}, raw flight row buffer ~= {}, airport map ~= {}, airport MCT map ~= {}, global MCT ~= {}, flight map ~= {}, retained ~= {}, startup peak during preload ~= {}.",
@@ -192,7 +196,10 @@ impl WebData {
         let airport_mct = match get_all_airport_mct(&self.database).await {
             Ok(airport_mct) => airport_mct.into_iter().collect::<HashMap<_, _>>(),
             Err(error) => {
-                eprintln!("Failed to reload airport MCT payloads from database: {}", error);
+                eprintln!(
+                    "Failed to reload airport MCT payloads from database: {}",
+                    error
+                );
                 HashMap::new()
             }
         };
@@ -213,7 +220,10 @@ impl WebData {
         let global_mct = match get_global_mct(&self.database).await {
             Ok(global_mct) => global_mct,
             Err(error) => {
-                eprintln!("Failed to reload global MCT payload from database: {}", error);
+                eprintln!(
+                    "Failed to reload global MCT payload from database: {}",
+                    error
+                );
                 GlobalMctData::default()
             }
         };

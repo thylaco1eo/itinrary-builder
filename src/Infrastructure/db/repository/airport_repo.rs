@@ -131,7 +131,9 @@ pub async fn get_all_airports(db: &Surreal<Any>) -> Vec<AirportRow> {
             start, batch_size
         );
         let batch_started = Instant::now();
-        let mut response = match timeout(Duration::from_secs(batch_timeout_secs), db.query(&sql)).await {
+        let mut response = match timeout(Duration::from_secs(batch_timeout_secs), db.query(&sql))
+            .await
+        {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 eprintln!(
