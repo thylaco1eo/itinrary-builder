@@ -23,7 +23,7 @@ use crate::Infrastructure::db::repository::route_repo::{self, PathResult, Segmen
 const DEFAULT_MAX_TRANSPORTS: u8 = 0;
 const MAX_CIRCUITY: f64 = 2.0;
 const DEFAULT_MCT_MINUTES: i64 = DEFAULT_AIRPORT_MCT_MINUTES as i64;
-const MAX_CONNECTION_WINDOW_HOURS: i64 = 24;
+const MAX_CONNECTION_WINDOW_HOURS: i64 = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EffectiveMctSource {
@@ -1936,6 +1936,85 @@ mod tests {
         assert_eq!(transfer_count(&itinerary), 1);
         assert_eq!(transfer_time_minutes(&itinerary), 150);
         assert_eq!(total_travel_time_minutes(&itinerary), 900);
+    }
+
+    #[test]
+    fn single_transfer_wait_is_limited_to_twelve_hours() {
+        let (airports, airport_mct) =
+            sample_airport_context(airport_default_mct_records(180), vec![]);
+        let previous = sample_flight("AA", "100", "JFK", "FRA", 6, 8, None, None);
+        let allowed = Flightcore::new(
+            "LH".to_string(),
+            "400".to_string(),
+            AirportCode::new("FRA").unwrap(),
+            AirportCode::new("MAD").unwrap(),
+            chrono_tz::UTC
+                .with_ymd_and_hms(2026, 4, 2, 20, 0, 0)
+                .unwrap(),
+            chrono_tz::UTC
+                .with_ymd_and_hms(2026, 4, 2, 22, 30, 0)
+                .unwrap(),
+            150,
+            None,
+            None,
+            sample_designator("LH", "400"),
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+        );
+        let blocked = Flightcore::new(
+            "LH".to_string(),
+            "401".to_string(),
+            AirportCode::new("FRA").unwrap(),
+            AirportCode::new("MAD").unwrap(),
+            chrono_tz::UTC
+                .with_ymd_and_hms(2026, 4, 2, 20, 1, 0)
+                .unwrap(),
+            chrono_tz::UTC
+                .with_ymd_and_hms(2026, 4, 2, 22, 31, 0)
+                .unwrap(),
+            150,
+            None,
+            None,
+            sample_designator("LH", "401"),
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+        );
+        let path = PathResult {
+            airports: vec![],
+            segments: vec![],
+            total_dist: 0.0,
+            circuity: 0.0,
+        };
+
+        let allowed_result = validate_connection(
+            &path,
+            &airports,
+            &airport_mct,
+            &GlobalMctData::default(),
+            1,
+            &[&previous],
+            &allowed,
+        );
+        let blocked_result = validate_connection(
+            &path,
+            &airports,
+            &airport_mct,
+            &GlobalMctData::default(),
+            1,
+            &[&previous],
+            &blocked,
+        );
+
+        assert!(allowed_result.is_ok());
+        assert!(blocked_result
+            .unwrap_err()
+            .contains("later than connection window end"));
     }
 
     #[test]
