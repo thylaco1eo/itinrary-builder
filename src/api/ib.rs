@@ -287,6 +287,8 @@ pub async fn get_ib(
             "message": "origin or destination airport is not loaded"
         })));
     }
+    let origin_airport_scope = same_city_airport_codes(&origin, &airport_cache);
+    let destination_airport_scope = same_city_airport_codes(&destination, &airport_cache);
 
     request_info(
         &request_trace,
@@ -294,6 +296,8 @@ pub async fn get_ib(
         json!({
             "origin": origin,
             "destination": destination,
+            "origin_airport_scope": origin_airport_scope,
+            "destination_airport_scope": destination_airport_scope,
             "transport": max_transports,
             "max_hops": max_hops,
             "max_circuity": MAX_CIRCUITY
@@ -303,6 +307,7 @@ pub async fn get_ib(
         data.database(),
         origin.as_str(),
         destination.as_str(),
+        &airport_cache,
         max_hops,
         MAX_CIRCUITY,
     )
@@ -1831,6 +1836,38 @@ fn record_id_code(record_id: &RecordId) -> Option<String> {
     match &record_id.key {
         RecordIdKey::String(code) => Some(code.clone()),
         _ => None,
+    }
+}
+
+fn same_city_airport_codes(code: &str, airports: &HashMap<String, Airport>) -> Vec<String> {
+    let Some(city_key) = airports.get(code).and_then(airport_city_key) else {
+        return vec![code.to_string()];
+    };
+
+    let mut codes = airports
+        .iter()
+        .filter_map(|(candidate_code, airport)| {
+            (airport_city_key(airport).as_deref() == Some(city_key.as_str()))
+                .then(|| candidate_code.clone())
+        })
+        .collect::<Vec<_>>();
+    codes.sort();
+    codes.dedup();
+    codes
+}
+
+fn airport_city_key(airport: &Airport) -> Option<String> {
+    let country = normalize_city_key_part(airport.country()?)?;
+    let city = normalize_city_key_part(airport.city()?)?;
+    Some(format!("{country}|{city}"))
+}
+
+fn normalize_city_key_part(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_uppercase();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
     }
 }
 
