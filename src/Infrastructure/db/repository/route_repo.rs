@@ -403,12 +403,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn accepts_same_city_origin_airport() {
+        let airports = sample_airports();
+        let route_edges = vec![sample_edge(&airports, "PKX", "CCC", "CA", "100")];
+
+        let paths = find_paths_from_route_edges(&route_edges, &airports, "PEK", "CCC", 1, 10.0);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            record_id_code(&paths[0].segments[0].from).unwrap(),
+            "PKX".to_string()
+        );
+    }
+
+    #[test]
+    fn accepts_cross_test_path_when_circuity_limit_allows_it() {
+        let airports = sample_airports();
+        let route_edges = vec![
+            sample_edge(&airports, "HND", "CAN", "CA", "6700"),
+            sample_edge(&airports, "CAN", "PEK", "CA", "1302"),
+        ];
+
+        let strict_paths =
+            find_paths_from_route_edges(&route_edges, &airports, "NRT", "PEK", 2, 2.0);
+        let relaxed_paths =
+            find_paths_from_route_edges(&route_edges, &airports, "NRT", "PEK", 2, 2.5);
+
+        assert_eq!(strict_paths.len(), 0);
+        assert_eq!(relaxed_paths.len(), 1);
+        assert!(relaxed_paths[0].circuity > 2.0);
+        assert!(relaxed_paths[0].circuity < 2.5);
+    }
+
     fn sample_airports() -> HashMap<String, Airport> {
         [
             sample_airport("AAA", "Alpha", "CN", 116.0, 39.0),
             sample_airport("PEK", "Beijing", "CN", 116.6, 40.1),
             sample_airport("PKX", "Beijing", "CN", 116.4, 39.5),
             sample_airport("CCC", "Gamma", "CN", 121.0, 31.0),
+            sample_airport("NRT", "Tokyo", "JP", 140.3929, 35.772),
+            sample_airport("HND", "Tokyo", "JP", 139.7798, 35.5494),
+            sample_airport("CAN", "Guangzhou", "CN", 113.2988, 23.3924),
         ]
         .into_iter()
         .map(|airport| (airport.id().as_str().to_string(), airport))

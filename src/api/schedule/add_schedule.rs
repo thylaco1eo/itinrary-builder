@@ -5,9 +5,10 @@ use crate::Infrastructure::db::repository::flight_repo;
 use crate::Infrastructure::file_loader::ssim_loader::{OagStreamIterator, ParseItem};
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
 use actix_web::{put, web, HttpResponse};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::time::Instant;
+use surrealdb_types::RecordId;
 
 #[derive(Debug, MultipartForm)]
 struct UploadForm {
@@ -111,7 +112,7 @@ fn stage_schedule_import(file: File) -> Result<StagedScheduleImport, String> {
     let mut duplicate_flight_rows_skipped = 0usize;
     let mut build_duration = std::time::Duration::default();
     let mut flight_rows = Vec::new();
-    let mut seen_flight_row_ids = HashSet::new();
+    let mut staged_row_positions = HashMap::<RecordId, usize>::new();
     let mut route_accumulators: HashMap<(String, String), RouteAccumulator> = HashMap::new();
 
     for item in iterator {
@@ -126,7 +127,7 @@ fn stage_schedule_import(file: File) -> Result<StagedScheduleImport, String> {
                 plan_count += plans.len();
                 append_unique_flight_rows(
                     &mut flight_rows,
-                    &mut seen_flight_row_ids,
+                    &mut staged_row_positions,
                     &mut duplicate_flight_rows_skipped,
                     plans.iter().flat_map(|plan| {
                         flightplan::expand_for_table(plan, flight_repo::temp_flight_table())
@@ -165,15 +166,17 @@ fn stage_schedule_import(file: File) -> Result<StagedScheduleImport, String> {
 
 fn append_unique_flight_rows(
     staged_rows: &mut Vec<crate::Infrastructure::db::model::flight_row::FlightRow>,
-    seen_ids: &mut HashSet<surrealdb_types::RecordId>,
+    row_positions: &mut HashMap<RecordId, usize>,
     duplicate_count: &mut usize,
     rows: impl IntoIterator<Item = crate::Infrastructure::db::model::flight_row::FlightRow>,
 ) {
     for row in rows {
-        if seen_ids.insert(row.id.clone()) {
-            staged_rows.push(row);
-        } else {
+        if let Some(existing_index) = row_positions.get(&row.id).copied() {
+            staged_rows[existing_index].merge_in_place(row);
             *duplicate_count += 1;
+        } else {
+            row_positions.insert(row.id.clone(), staged_rows.len());
+            staged_rows.push(row);
         }
     }
 }
@@ -188,10 +191,17 @@ fn accumulate_route_updates(
             plan.destination.as_str().to_string(),
         );
         let accumulator = accumulators.entry(key).or_default();
+        accumulator.flights.insert(format!(
+            "{}_{}",
+            plan.operating_designator.company, plan.operating_designator.flight_number
+        ));
         accumulator
-            .flights
-            .insert(format!("{}_{}", plan.company, plan.flight_no));
+            .companies
+            .insert(plan.operating_designator.company.clone());
         accumulator.companies.insert(plan.company.clone());
+        for duplicate in &plan.duplicate_designators {
+            accumulator.companies.insert(duplicate.company.clone());
+        }
     }
 }
 
@@ -259,18 +269,66 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 4, 16).unwrap(),
         );
         let mut staged_rows = Vec::new();
-        let mut seen_ids = HashSet::new();
+        let mut row_positions = HashMap::new();
         let mut duplicate_count = 0usize;
 
         append_unique_flight_rows(
             &mut staged_rows,
-            &mut seen_ids,
+            &mut row_positions,
             &mut duplicate_count,
             vec![first, duplicate],
         );
 
         assert_eq!(staged_rows.len(), 1);
         assert_eq!(duplicate_count, 1);
+    }
+
+    #[test]
+    fn marketing_rows_merge_under_operating_identity() {
+        let marketing_plan = sample_plan("CA", "7312", "SFO", "IAD");
+        let mut operating_plan = sample_plan("UA", "551", "SFO", "IAD");
+        operating_plan.duplicate_designators = vec![
+            crate::Infrastructure::db::model::flight_row::FlightDesignatorRow {
+                company: "CA".to_string(),
+                flight_number: "7312".to_string(),
+                operational_suffix: None,
+            },
+        ];
+
+        let mut staged_rows = Vec::new();
+        let mut row_positions = HashMap::new();
+        let mut duplicate_count = 0usize;
+
+        append_unique_flight_rows(
+            &mut staged_rows,
+            &mut row_positions,
+            &mut duplicate_count,
+            vec![
+                crate::Infrastructure::db::model::flight_row::FlightRow::from_plan(
+                    &with_operating_designator(marketing_plan, "UA", "551"),
+                    NaiveDate::from_ymd_opt(2026, 4, 16).unwrap(),
+                ),
+                crate::Infrastructure::db::model::flight_row::FlightRow::from_plan(
+                    &operating_plan,
+                    NaiveDate::from_ymd_opt(2026, 4, 16).unwrap(),
+                ),
+            ],
+        );
+
+        assert_eq!(staged_rows.len(), 1);
+        assert_eq!(duplicate_count, 1);
+        assert_eq!(staged_rows[0].company, "UA");
+        assert_eq!(staged_rows[0].flight_num, "551");
+        assert_eq!(
+            staged_rows[0].duplicate_designators,
+            vec![
+                crate::Infrastructure::db::model::flight_row::FlightDesignatorRow {
+                    company: "CA".to_string(),
+                    flight_number: "7312".to_string(),
+                    operational_suffix: None,
+                }
+            ]
+        );
     }
 
     fn sample_plan(
@@ -307,5 +365,19 @@ mod tests {
             electronic_ticketing_info: None,
             type3_legs: vec![],
         }
+    }
+
+    fn with_operating_designator(
+        mut plan: crate::domain::flightplan::FlightPlan,
+        company: &str,
+        flight_no: &str,
+    ) -> crate::domain::flightplan::FlightPlan {
+        plan.operating_designator =
+            crate::Infrastructure::db::model::flight_row::FlightDesignatorRow {
+                company: company.to_string(),
+                flight_number: flight_no.to_string(),
+                operational_suffix: None,
+            };
+        plan
     }
 }

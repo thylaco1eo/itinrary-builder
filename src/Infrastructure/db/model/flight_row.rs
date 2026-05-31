@@ -132,10 +132,40 @@ impl FlightRow {
     }
 
     pub fn from_plan_for_table(flight_plan: &FlightPlan, date: NaiveDate, table: &str) -> Self {
+        let primary_designator = flight_plan.operating_designator.clone();
+        let marketing_designator = FlightDesignatorRow {
+            company: flight_plan.company.clone(),
+            flight_number: flight_plan.flight_no.clone(),
+            operational_suffix: None,
+        };
+        let mut duplicate_designators = flight_plan.duplicate_designators.clone();
+        if marketing_designator != primary_designator {
+            push_unique_designator(&mut duplicate_designators, marketing_designator.clone());
+        }
+        normalize_duplicate_designators(&primary_designator, &mut duplicate_designators);
+
+        let type3_legs = flight_plan
+            .type3_legs
+            .iter()
+            .cloned()
+            .map(|mut leg| {
+                if marketing_designator != leg.operating_designator {
+                    push_unique_designator(
+                        &mut leg.duplicate_designators,
+                        marketing_designator.clone(),
+                    );
+                }
+                normalize_duplicate_designators(
+                    &leg.operating_designator,
+                    &mut leg.duplicate_designators,
+                );
+                leg
+            })
+            .collect::<Vec<_>>();
         let id_str = format!(
             "{}_{}_{}_{}_{}",
-            flight_plan.company,
-            flight_plan.flight_no,
+            primary_designator.company,
+            primary_designator.flight_number,
             flight_plan.origin.as_str(),
             flight_plan.destination.as_str(),
             date.format("%Y-%m-%d")
@@ -144,8 +174,8 @@ impl FlightRow {
         let arr_offset = FixedOffset::from_str(flight_plan.arr_tz.as_str()).unwrap();
         FlightRow {
             id: RecordId::new(table, id_str.as_str()),
-            company: flight_plan.company.clone(),
-            flight_num: flight_plan.flight_no.clone(),
+            company: primary_designator.company.clone(),
+            flight_num: primary_designator.flight_number.clone(),
             origin_code: flight_plan.origin.as_str().to_string(),
             destination_code: flight_plan.destination.as_str().to_string(),
             dep_local: dep_offset
@@ -170,16 +200,183 @@ impl FlightRow {
                 .type3_legs
                 .last()
                 .and_then(|leg| leg.arrival_terminal.clone()),
-            operating_designator: flight_plan.operating_designator.clone(),
-            duplicate_designators: flight_plan.duplicate_designators.clone(),
+            operating_designator: primary_designator,
+            duplicate_designators,
             joint_operation_airline_designators: flight_plan
                 .joint_operation_airline_designators
                 .clone(),
             meal_service_note: flight_plan.meal_service_note.clone(),
             in_flight_service_info: flight_plan.in_flight_service_info.clone(),
             electronic_ticketing_info: flight_plan.electronic_ticketing_info.clone(),
-            type3_legs: flight_plan.type3_legs.clone(),
+            type3_legs,
         }
+    }
+
+    pub fn merge_in_place(&mut self, incoming: FlightRow) {
+        self.departure_terminal =
+            prefer_richer_option(self.departure_terminal.take(), incoming.departure_terminal);
+        self.arrival_terminal =
+            prefer_richer_option(self.arrival_terminal.take(), incoming.arrival_terminal);
+        merge_designator_lists(
+            &self.operating_designator,
+            &mut self.duplicate_designators,
+            incoming.duplicate_designators,
+        );
+        merge_string_lists(
+            &mut self.joint_operation_airline_designators,
+            incoming.joint_operation_airline_designators,
+        );
+        self.meal_service_note =
+            prefer_richer_option(self.meal_service_note.take(), incoming.meal_service_note);
+        self.in_flight_service_info = prefer_richer_option(
+            self.in_flight_service_info.take(),
+            incoming.in_flight_service_info,
+        );
+        self.electronic_ticketing_info = prefer_richer_option(
+            self.electronic_ticketing_info.take(),
+            incoming.electronic_ticketing_info,
+        );
+        merge_type3_legs(&mut self.type3_legs, incoming.type3_legs);
+    }
+}
+
+impl FlightType3LegRow {
+    fn merge_in_place(&mut self, incoming: FlightType3LegRow) {
+        self.departure_terminal =
+            prefer_richer_option(self.departure_terminal.take(), incoming.departure_terminal);
+        self.arrival_terminal =
+            prefer_richer_option(self.arrival_terminal.take(), incoming.arrival_terminal);
+        self.prbd = prefer_richer_option(self.prbd.take(), incoming.prbd);
+        self.prbm = prefer_richer_option(self.prbm.take(), incoming.prbm);
+        self.meal_service_note =
+            prefer_richer_option(self.meal_service_note.take(), incoming.meal_service_note);
+        merge_string_lists(
+            &mut self.joint_operation_airline_designators,
+            incoming.joint_operation_airline_designators,
+        );
+        self.secure_flight_indicator = prefer_richer_option(
+            self.secure_flight_indicator.take(),
+            incoming.secure_flight_indicator,
+        );
+        self.itinerary_variation_overflow = prefer_richer_option(
+            self.itinerary_variation_overflow.take(),
+            incoming.itinerary_variation_overflow,
+        );
+        self.aircraft_owner =
+            prefer_richer_option(self.aircraft_owner.take(), incoming.aircraft_owner);
+        self.cockpit_crew_employer = prefer_richer_option(
+            self.cockpit_crew_employer.take(),
+            incoming.cockpit_crew_employer,
+        );
+        self.cabin_crew_employer = prefer_richer_option(
+            self.cabin_crew_employer.take(),
+            incoming.cabin_crew_employer,
+        );
+        self.onward_airline_designator = prefer_richer_option(
+            self.onward_airline_designator.take(),
+            incoming.onward_airline_designator,
+        );
+        self.onward_flight_number = prefer_richer_option(
+            self.onward_flight_number.take(),
+            incoming.onward_flight_number,
+        );
+        self.onward_aircraft_rotation_layover = prefer_richer_option(
+            self.onward_aircraft_rotation_layover.take(),
+            incoming.onward_aircraft_rotation_layover,
+        );
+        self.onward_operational_suffix = prefer_richer_option(
+            self.onward_operational_suffix.take(),
+            incoming.onward_operational_suffix,
+        );
+        self.operating_airline_disclosure = prefer_richer_option(
+            self.operating_airline_disclosure.take(),
+            incoming.operating_airline_disclosure,
+        );
+        self.traffic_restriction_code = prefer_richer_option(
+            self.traffic_restriction_code.take(),
+            incoming.traffic_restriction_code,
+        );
+        self.traffic_restriction_code_leg_overflow_indicator = prefer_richer_option(
+            self.traffic_restriction_code_leg_overflow_indicator.take(),
+            incoming.traffic_restriction_code_leg_overflow_indicator,
+        );
+        merge_designator_lists(
+            &self.operating_designator,
+            &mut self.duplicate_designators,
+            incoming.duplicate_designators,
+        );
+        self.in_flight_service_info = prefer_richer_option(
+            self.in_flight_service_info.take(),
+            incoming.in_flight_service_info,
+        );
+        self.electronic_ticketing_info = prefer_richer_option(
+            self.electronic_ticketing_info.take(),
+            incoming.electronic_ticketing_info,
+        );
+    }
+}
+
+fn merge_type3_legs(existing: &mut Vec<FlightType3LegRow>, incoming: Vec<FlightType3LegRow>) {
+    for incoming_leg in incoming {
+        if let Some(existing_leg) = existing.iter_mut().find(|leg| {
+            leg.leg_sequence == incoming_leg.leg_sequence
+                && leg.departure_station == incoming_leg.departure_station
+                && leg.arrival_station == incoming_leg.arrival_station
+        }) {
+            existing_leg.merge_in_place(incoming_leg);
+        } else {
+            existing.push(incoming_leg);
+        }
+    }
+
+    existing.sort_by_key(|leg| leg.leg_sequence);
+}
+
+fn merge_designator_lists(
+    primary: &FlightDesignatorRow,
+    existing: &mut Vec<FlightDesignatorRow>,
+    incoming: Vec<FlightDesignatorRow>,
+) {
+    for designator in incoming {
+        push_unique_designator(existing, designator);
+    }
+    normalize_duplicate_designators(primary, existing);
+}
+
+fn merge_string_lists(existing: &mut Vec<String>, incoming: Vec<String>) {
+    for value in incoming {
+        if !existing.contains(&value) {
+            existing.push(value);
+        }
+    }
+}
+
+fn push_unique_designator(target: &mut Vec<FlightDesignatorRow>, candidate: FlightDesignatorRow) {
+    if !target.contains(&candidate) {
+        target.push(candidate);
+    }
+}
+
+fn normalize_duplicate_designators(
+    primary: &FlightDesignatorRow,
+    duplicates: &mut Vec<FlightDesignatorRow>,
+) {
+    let mut normalized = Vec::new();
+    for designator in duplicates.drain(..) {
+        if designator != *primary && !normalized.contains(&designator) {
+            normalized.push(designator);
+        }
+    }
+    *duplicates = normalized;
+}
+
+fn prefer_richer_option(current: Option<String>, incoming: Option<String>) -> Option<String> {
+    match (current, incoming) {
+        (Some(current), Some(incoming)) if incoming.len() > current.len() => Some(incoming),
+        (Some(current), Some(_)) => Some(current),
+        (Some(current), None) => Some(current),
+        (None, Some(incoming)) => Some(incoming),
+        (None, None) => None,
     }
 }
 
@@ -301,7 +498,91 @@ mod tests {
             Some("K")
         );
         assert_eq!(row.operating_designator.company, "UA");
+        assert_eq!(row.company, "UA");
+        assert_eq!(row.flight_num, "551");
         assert_eq!(row.in_flight_service_info.as_deref(), Some("9"));
         assert_eq!(row.electronic_ticketing_info.as_deref(), Some("ET"));
+    }
+
+    #[test]
+    fn marketing_designator_is_preserved_as_duplicate_when_operating_key_differs() {
+        let plan = FlightPlan {
+            company: "CA".to_string(),
+            flight_no: "7312".to_string(),
+            origin: AirportCode::new("SFO").unwrap(),
+            destination: AirportCode::new("IAD").unwrap(),
+            dep_time: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            arr_time: NaiveTime::from_hms_opt(18, 0, 0).unwrap(),
+            block_time: Duration::hours(5),
+            start_date: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+            weekdays: [false, false, false, true, false, false, false],
+            frequency_rate: None,
+            dep_tz: "-0700".to_string(),
+            arr_tz: "-0400".to_string(),
+            arrival_day_offset: 0,
+            operating_designator: FlightDesignatorRow {
+                company: "UA".to_string(),
+                flight_number: "551".to_string(),
+                operational_suffix: None,
+            },
+            duplicate_designators: vec![],
+            joint_operation_airline_designators: vec![],
+            meal_service_note: None,
+            in_flight_service_info: None,
+            electronic_ticketing_info: None,
+            type3_legs: vec![FlightType3LegRow {
+                leg_sequence: 1,
+                departure_station: "SFO".to_string(),
+                arrival_station: "IAD".to_string(),
+                departure_terminal: None,
+                arrival_terminal: None,
+                prbd: None,
+                prbm: None,
+                meal_service_note: None,
+                joint_operation_airline_designators: vec![],
+                secure_flight_indicator: None,
+                itinerary_variation_overflow: None,
+                aircraft_owner: None,
+                cockpit_crew_employer: None,
+                cabin_crew_employer: None,
+                onward_airline_designator: None,
+                onward_flight_number: None,
+                onward_aircraft_rotation_layover: None,
+                onward_operational_suffix: None,
+                operating_airline_disclosure: None,
+                traffic_restriction_code: None,
+                traffic_restriction_code_leg_overflow_indicator: None,
+                operating_designator: FlightDesignatorRow {
+                    company: "UA".to_string(),
+                    flight_number: "551".to_string(),
+                    operational_suffix: None,
+                },
+                duplicate_designators: vec![],
+                in_flight_service_info: None,
+                electronic_ticketing_info: None,
+            }],
+        };
+
+        let row = FlightRow::from_plan(&plan, plan.start_date);
+
+        assert_eq!(row.company, "UA");
+        assert_eq!(row.flight_num, "551");
+        assert_eq!(
+            row.duplicate_designators,
+            vec![FlightDesignatorRow {
+                company: "CA".to_string(),
+                flight_number: "7312".to_string(),
+                operational_suffix: None,
+            }]
+        );
+        assert_eq!(
+            row.type3_legs[0].duplicate_designators,
+            vec![FlightDesignatorRow {
+                company: "CA".to_string(),
+                flight_number: "7312".to_string(),
+                operational_suffix: None,
+            }]
+        );
     }
 }

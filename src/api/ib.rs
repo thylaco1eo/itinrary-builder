@@ -21,7 +21,9 @@ use crate::Infrastructure::db::model::flight_row::FlightDesignatorRow;
 use crate::Infrastructure::db::repository::route_repo::{self, PathResult, Segment};
 
 const DEFAULT_MAX_TRANSPORTS: u8 = 0;
-const MAX_CIRCUITY: f64 = 2.0;
+const DEFAULT_MAX_TRAVEL_TIME_DAYS: u32 = 2;
+const MINUTES_PER_DAY: u64 = 24 * 60;
+const MAX_CIRCUITY: f64 = 2.5;
 const DEFAULT_MCT_MINUTES: i64 = DEFAULT_AIRPORT_MCT_MINUTES as i64;
 const MAX_CONNECTION_WINDOW_HOURS: i64 = 12;
 
@@ -159,6 +161,8 @@ pub async fn get_ib(
     let raw_destination = request.get_destination();
     let dep_date_raw = request.get_dep_date();
     let raw_transport = request.get_transport();
+    let raw_operation_company = request.get_operation_company();
+    let raw_max_travel_time = request.get_max_travel_time();
     let request_trace = request_trace_id(&raw_origin, &raw_destination, &dep_date_raw);
 
     request_info(
@@ -168,7 +172,9 @@ pub async fn get_ib(
             "raw_origin": raw_origin,
             "raw_destination": raw_destination,
             "raw_dep_date": dep_date_raw,
-            "raw_transport": raw_transport
+            "raw_transport": raw_transport,
+            "raw_operation_company": raw_operation_company,
+            "raw_max_travel_time": raw_max_travel_time
         }),
     );
 
@@ -256,6 +262,42 @@ pub async fn get_ib(
             })));
         }
     };
+    let operation_companies = match parse_operation_company_filter(raw_operation_company.as_deref())
+    {
+        Ok(value) => value,
+        Err(message) => {
+            request_warn(
+                &request_trace,
+                "request_rejected_invalid_operation_company",
+                json!({
+                    "operation_company": raw_operation_company,
+                    "message": message
+                }),
+            );
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "status": "invalid request",
+                "message": message
+            })));
+        }
+    };
+    let max_travel_time_days = match parse_max_travel_time_days(raw_max_travel_time.as_deref()) {
+        Ok(value) => value,
+        Err(message) => {
+            request_warn(
+                &request_trace,
+                "request_rejected_invalid_max_travel_time",
+                json!({
+                    "max_travel_time": raw_max_travel_time,
+                    "message": message
+                }),
+            );
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "status": "invalid request",
+                "message": message
+            })));
+        }
+    };
+    let max_travel_time_minutes = u64::from(max_travel_time_days) * MINUTES_PER_DAY;
 
     request_info(
         &request_trace,
@@ -264,7 +306,10 @@ pub async fn get_ib(
             "origin": origin,
             "destination": destination,
             "dep_date": dep_date.to_string(),
-            "transport": max_transports
+            "transport": max_transports,
+            "operation_companies": operation_companies,
+            "max_travel_time_days": max_travel_time_days,
+            "max_travel_time_minutes": max_travel_time_minutes
         }),
     );
 
@@ -299,7 +344,10 @@ pub async fn get_ib(
             "origin_airport_scope": origin_airport_scope,
             "destination_airport_scope": destination_airport_scope,
             "transport": max_transports,
+            "operation_companies": operation_companies,
             "max_hops": max_hops,
+            "max_travel_time_days": max_travel_time_days,
+            "max_travel_time_minutes": max_travel_time_minutes,
             "max_circuity": MAX_CIRCUITY
         }),
     );
@@ -413,6 +461,35 @@ pub async fn get_ib(
                 continue;
             }
 
+            let total_travel_time_minutes = total_travel_time_minutes(&expanded_segments);
+            if u64::from(total_travel_time_minutes) > max_travel_time_minutes {
+                request_info(
+                    &request_trace,
+                    "itinerary_skipped_max_travel_time",
+                    json!({
+                        "path_index": path_index + 1,
+                        "flight_chain": flight_chain_json(&combination),
+                        "max_travel_time_days": max_travel_time_days,
+                        "max_travel_time_minutes": max_travel_time_minutes,
+                        "total_travel_time_minutes": total_travel_time_minutes
+                    }),
+                );
+                continue;
+            }
+            if !matches_operating_company_filter(&expanded_segments, operation_companies.as_deref())
+            {
+                request_info(
+                    &request_trace,
+                    "itinerary_skipped_operation_company",
+                    json!({
+                        "path_index": path_index + 1,
+                        "flight_chain": flight_chain_json(&combination),
+                        "operation_companies": operation_companies
+                    }),
+                );
+                continue;
+            }
+
             let itinerary = ItineraryResponse {
                 airports: airports_for_segments(&expanded_segments)
                     .unwrap_or_else(|| airports.clone()),
@@ -452,7 +529,7 @@ pub async fn get_ib(
                     .iter()
                     .map(|flight| flight.block_time_minutes())
                     .sum(),
-                total_travel_time_minutes: total_travel_time_minutes(&expanded_segments),
+                total_travel_time_minutes,
                 transfer_time_minutes: transfer_time_minutes(&expanded_segments),
                 transfer_count: transfer_count(&expanded_segments),
             };
@@ -1356,10 +1433,20 @@ fn matches_flight_carrier_scope(
     operating_carrier: Option<&str>,
 ) -> bool {
     if let Some(marketing_carrier) = marketing_carrier {
-        if flight.company() != marketing_carrier {
+        let matches_primary_marketing = flight.company() == marketing_carrier;
+        let matches_duplicate_marketing = flight
+            .duplicate_designators()
+            .iter()
+            .any(|designator| designator.company == marketing_carrier);
+
+        if !matches_primary_marketing && !matches_duplicate_marketing {
             return false;
         }
-        if !codeshare_indicator && operating_carrier.is_none() && is_codeshare_flight(flight) {
+        if !codeshare_indicator
+            && operating_carrier.is_none()
+            && matches_duplicate_marketing
+            && !matches_primary_marketing
+        {
             return false;
         }
     } else if codeshare_indicator && !is_codeshare_flight(flight) {
@@ -1372,7 +1459,8 @@ fn matches_flight_carrier_scope(
 }
 
 fn is_codeshare_flight(flight: &Flightcore) -> bool {
-    flight.company() != flight.operating_designator().company
+    !flight.duplicate_designators().is_empty()
+        || flight.company() != flight.operating_designator().company
         || flight.flight_id() != flight.operating_designator().flight_number
 }
 
@@ -1886,10 +1974,69 @@ fn parse_transport_limit(raw_transport: Option<&str>) -> Result<u8, String> {
     Ok(transport)
 }
 
+fn parse_operation_company_filter(
+    raw_operation_company: Option<&str>,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(raw_operation_company) = raw_operation_company
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let mut operation_companies = raw_operation_company
+        .split(',')
+        .map(str::trim)
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>();
+
+    if operation_companies.is_empty()
+        || operation_companies.iter().any(|carrier| carrier.is_empty())
+    {
+        return Err("operation_company must contain one or more airline codes".to_string());
+    }
+
+    operation_companies.sort();
+    operation_companies.dedup();
+    Ok(Some(operation_companies))
+}
+
+fn parse_max_travel_time_days(raw_max_travel_time: Option<&str>) -> Result<u32, String> {
+    let Some(raw_max_travel_time) = raw_max_travel_time
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(DEFAULT_MAX_TRAVEL_TIME_DAYS);
+    };
+
+    let max_travel_time = raw_max_travel_time
+        .parse::<u32>()
+        .map_err(|_| "max_travel_time must be an integer greater than 0".to_string())?;
+
+    if max_travel_time == 0 {
+        Err("max_travel_time must be an integer greater than 0".to_string())
+    } else {
+        Ok(max_travel_time)
+    }
+}
+
 fn max_hops_for_transport_limit(transport: u8) -> Result<u8, String> {
     transport
         .checked_add(1)
         .ok_or_else(|| "transport must be less than 255".to_string())
+}
+
+fn matches_operating_company_filter(
+    flights: &[&Flightcore],
+    operation_companies: Option<&[String]>,
+) -> bool {
+    operation_companies.is_none_or(|allowed_companies| {
+        flights.iter().all(|flight| {
+            allowed_companies
+                .iter()
+                .any(|carrier| flight.operating_designator().company == *carrier)
+        })
+    })
 }
 
 #[cfg(test)]
@@ -1973,6 +2120,78 @@ mod tests {
         assert_eq!(transfer_count(&itinerary), 1);
         assert_eq!(transfer_time_minutes(&itinerary), 150);
         assert_eq!(total_travel_time_minutes(&itinerary), 900);
+    }
+
+    #[test]
+    fn codeshare_detection_uses_duplicate_designators_when_operating_key_is_primary() {
+        let tz = chrono_tz::UTC;
+        let flight = Flightcore::new(
+            "UA".to_string(),
+            "551".to_string(),
+            AirportCode::new("SFO").unwrap(),
+            AirportCode::new("IAD").unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, 10, 0, 0).unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, 18, 0, 0).unwrap(),
+            300,
+            None,
+            None,
+            sample_designator("UA", "551"),
+            vec![sample_designator("CA", "7312")],
+            vec![],
+            None,
+            None,
+            None,
+        );
+
+        assert!(is_codeshare_flight(&flight));
+        assert!(matches_flight_carrier_scope(
+            &flight,
+            Some("UA"),
+            false,
+            None
+        ));
+        assert!(!matches_flight_carrier_scope(
+            &flight,
+            Some("CA"),
+            false,
+            None
+        ));
+        assert!(matches_flight_carrier_scope(
+            &flight,
+            Some("CA"),
+            true,
+            Some("UA")
+        ));
+    }
+
+    #[test]
+    fn operating_company_filter_uses_operating_designator_company() {
+        let tz = chrono_tz::UTC;
+        let flight = Flightcore::new(
+            "ZH".to_string(),
+            "1001".to_string(),
+            AirportCode::new("PEK").unwrap(),
+            AirportCode::new("CAN").unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, 8, 0, 0).unwrap(),
+            tz.with_ymd_and_hms(2026, 4, 2, 11, 0, 0).unwrap(),
+            180,
+            None,
+            None,
+            sample_designator("CA", "1001"),
+            vec![],
+            vec![],
+            None,
+            None,
+            None,
+        );
+        let itinerary = vec![&flight];
+        let filter = vec!["CA".to_string()];
+
+        assert!(matches_operating_company_filter(&itinerary, Some(&filter)));
+        assert!(!matches_operating_company_filter(
+            &itinerary,
+            Some(&["ZH".to_string()])
+        ));
     }
 
     #[test]
@@ -2079,6 +2298,65 @@ mod tests {
         assert_eq!(
             parse_transport_limit(Some("abc")).unwrap_err(),
             "transport must be a non-negative integer"
+        );
+    }
+
+    #[test]
+    fn defaults_operation_company_filter_when_request_omits_it() {
+        assert_eq!(parse_operation_company_filter(None).unwrap(), None);
+        assert_eq!(parse_operation_company_filter(Some("   ")).unwrap(), None);
+    }
+
+    #[test]
+    fn parses_operation_company_filter_and_normalizes_codes() {
+        assert_eq!(
+            parse_operation_company_filter(Some("ca, zh,CA")).unwrap(),
+            Some(vec!["CA".to_string(), "ZH".to_string()])
+        );
+    }
+
+    #[test]
+    fn rejects_empty_operation_company_codes() {
+        assert_eq!(
+            parse_operation_company_filter(Some("CA,")).unwrap_err(),
+            "operation_company must contain one or more airline codes"
+        );
+        assert_eq!(
+            parse_operation_company_filter(Some(",")).unwrap_err(),
+            "operation_company must contain one or more airline codes"
+        );
+    }
+
+    #[test]
+    fn defaults_max_travel_time_to_two_days() {
+        assert_eq!(
+            parse_max_travel_time_days(None).unwrap(),
+            DEFAULT_MAX_TRAVEL_TIME_DAYS
+        );
+        assert_eq!(
+            parse_max_travel_time_days(Some("   ")).unwrap(),
+            DEFAULT_MAX_TRAVEL_TIME_DAYS
+        );
+    }
+
+    #[test]
+    fn parses_max_travel_time_days() {
+        assert_eq!(parse_max_travel_time_days(Some("3")).unwrap(), 3);
+    }
+
+    #[test]
+    fn rejects_non_positive_max_travel_time_days() {
+        assert_eq!(
+            parse_max_travel_time_days(Some("0")).unwrap_err(),
+            "max_travel_time must be an integer greater than 0"
+        );
+        assert_eq!(
+            parse_max_travel_time_days(Some("-1")).unwrap_err(),
+            "max_travel_time must be an integer greater than 0"
+        );
+        assert_eq!(
+            parse_max_travel_time_days(Some("abc")).unwrap_err(),
+            "max_travel_time must be an integer greater than 0"
         );
     }
 
