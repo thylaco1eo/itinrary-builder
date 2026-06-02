@@ -51,6 +51,8 @@ async fn main() -> std::io::Result<()> {
     let config: Configuration =
         serde_json::from_str(&contents).expect("Failed to parse config file");
 
+    api::ib::set_request_trace(config.log().request_trace());
+
     let log_path = runtime_paths::resolve_executable_relative(config.log().file())?;
     runtime_paths::create_parent_dir(&log_path)?;
 

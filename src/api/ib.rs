@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use actix_web::{get, web, HttpResponse};
 use chrono::{Duration, NaiveDate, Utc};
@@ -26,6 +28,14 @@ const MINUTES_PER_DAY: u64 = 24 * 60;
 const MAX_CIRCUITY: f64 = 2.5;
 const DEFAULT_MCT_MINUTES: i64 = DEFAULT_AIRPORT_MCT_MINUTES as i64;
 const MAX_CONNECTION_WINDOW_HOURS: i64 = 12;
+
+static REQUEST_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_request_trace(enabled: bool) {
+    REQUEST_TRACE_ENABLED.store(enabled, Ordering::Release);
+}
+
+type MctCacheKey = (*const Flightcore, *const Flightcore);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EffectiveMctSource {
@@ -164,6 +174,7 @@ pub async fn get_ib(
     let raw_operation_company = request.get_operation_company();
     let raw_max_travel_time = request.get_max_travel_time();
     let request_trace = request_trace_id(&raw_origin, &raw_destination, &dep_date_raw);
+    let t0 = Instant::now();
 
     request_info(
         &request_trace,
@@ -351,6 +362,7 @@ pub async fn get_ib(
             "max_circuity": MAX_CIRCUITY
         }),
     );
+    let t_route = Instant::now();
     let mut paths = match route_repo::find_paths(
         data.database(),
         origin.as_str(),
@@ -379,6 +391,9 @@ pub async fn get_ib(
         }
     };
 
+    let route_ms = t_route.elapsed().as_millis();
+    let path_count = paths.len();
+
     request_info(
         &request_trace,
         "route_search_completed",
@@ -402,6 +417,7 @@ pub async fn get_ib(
     let airport_mct = data.airport_mct();
     let global_mct = data.global_mct();
     let mut same_flight_cache = SameFlightExpansionCache::new(&flights);
+    let mut mct_cache: HashMap<MctCacheKey, EffectiveMct> = HashMap::new();
     request_info(
         &request_trace,
         "flight_lookup_strategy",
@@ -422,6 +438,7 @@ pub async fn get_ib(
     let mut seen = HashSet::new();
     let mut itineraries = Vec::new();
 
+    let t_build = Instant::now();
     for (path_index, path) in paths.iter().enumerate() {
         let Some(airports) = airport_codes(&path.airports) else {
             request_warn(
@@ -443,6 +460,7 @@ pub async fn get_ib(
             dep_date,
             &request_trace,
             path_index + 1,
+            &mut mct_cache,
         );
         for combination in combinations {
             let expanded_segments = expand_itinerary_segments(&combination, &mut same_flight_cache);
@@ -547,7 +565,7 @@ pub async fn get_ib(
                 .join("|");
 
             if seen.insert(dedup_key) {
-                request_info(
+                request_verbose(
                     &request_trace,
                     "itinerary_accepted",
                     json!({
@@ -557,7 +575,7 @@ pub async fn get_ib(
                 );
                 itineraries.push(itinerary);
             } else {
-                request_info(
+                request_verbose(
                     &request_trace,
                     "itinerary_duplicate",
                     json!({
@@ -569,6 +587,9 @@ pub async fn get_ib(
         }
     }
 
+    let build_ms = t_build.elapsed().as_millis();
+    let total_ms = t0.elapsed().as_millis();
+
     request_info(
         &request_trace,
         "request_completed",
@@ -579,7 +600,14 @@ pub async fn get_ib(
 
     Ok(HttpResponse::Ok().json(json!({
         "status": "ok",
-        "itineraries": itineraries
+        "itineraries": itineraries,
+        "_timing": {
+            "route_ms": route_ms,
+            "build_ms": build_ms,
+            "total_ms": total_ms,
+            "path_count": path_count,
+            "itinerary_count": itineraries.len()
+        }
     })))
 }
 
@@ -592,6 +620,7 @@ fn build_itineraries_for_path<'a>(
     dep_date: NaiveDate,
     request_trace: &str,
     path_index: usize,
+    mct_cache: &mut HashMap<MctCacheKey, EffectiveMct>,
 ) -> Vec<Vec<&'a Flightcore>> {
     request_info(
         request_trace,
@@ -617,6 +646,7 @@ fn build_itineraries_for_path<'a>(
         &mut results,
         request_trace,
         path_index,
+        mct_cache,
     );
     request_info(
         request_trace,
@@ -641,9 +671,10 @@ fn build_combinations<'a>(
     results: &mut Vec<Vec<&'a Flightcore>>,
     request_trace: &str,
     path_index: usize,
+    mct_cache: &mut HashMap<MctCacheKey, EffectiveMct>,
 ) {
     if segment_index == path.segments.len() {
-        request_info(
+        request_verbose(
             request_trace,
             "itinerary_combination_completed",
             json!({
@@ -670,6 +701,7 @@ fn build_combinations<'a>(
         request_trace,
         path_index,
         segment_count,
+        mct_cache,
     ) else {
         request_warn(
             request_trace,
@@ -698,7 +730,7 @@ fn build_combinations<'a>(
     }
 
     for flight in candidates {
-        request_info(
+        request_verbose(
             request_trace,
             "candidate_considered",
             json!({
@@ -710,7 +742,7 @@ fn build_combinations<'a>(
             }),
         );
 
-        request_info(
+        request_verbose(
             request_trace,
             "candidate_accepted",
             json!({
@@ -733,6 +765,7 @@ fn build_combinations<'a>(
             results,
             request_trace,
             path_index,
+            mct_cache,
         );
         current.pop();
     }
@@ -751,6 +784,7 @@ fn collect_segment_candidates<'a>(
     request_trace: &str,
     path_index: usize,
     segment_count: usize,
+    mct_cache: &mut HashMap<MctCacheKey, EffectiveMct>,
 ) -> Option<Vec<&'a Flightcore>> {
     let from = record_id_code(&segment.from)?;
     let to = record_id_code(&segment.to)?;
@@ -832,6 +866,7 @@ fn collect_segment_candidates<'a>(
                 segment_index,
                 current,
                 flight,
+                mct_cache,
             )
             .is_ok()
         })
@@ -902,6 +937,7 @@ fn validate_connection(
     segment_index: usize,
     current: &[&Flightcore],
     next_flight: &Flightcore,
+    mct_cache: &mut HashMap<MctCacheKey, EffectiveMct>,
 ) -> Result<(), String> {
     if segment_index == 0 {
         return Ok(());
@@ -923,6 +959,7 @@ fn validate_connection(
         segment_index,
         current,
         next_flight,
+        mct_cache,
     )
     .unwrap();
 
@@ -1154,6 +1191,7 @@ fn connection_bounds(
     segment_index: usize,
     current: &[&Flightcore],
     next_flight: &Flightcore,
+    mct_cache: &mut HashMap<MctCacheKey, EffectiveMct>,
 ) -> Option<(
     chrono::DateTime<chrono_tz::Tz>,
     chrono::DateTime<chrono_tz::Tz>,
@@ -1170,6 +1208,7 @@ fn connection_bounds(
         global_mct,
         previous_flight,
         next_flight,
+        mct_cache,
     );
     let earliest_departure =
         previous_flight.arr_local().clone() + Duration::minutes(effective_mct.minutes);
@@ -1192,6 +1231,7 @@ fn resolve_effective_mct(
         &GlobalMctData::default(),
         previous_flight,
         next_flight,
+        &mut HashMap::new(),
     )
 }
 
@@ -1201,7 +1241,16 @@ fn resolve_effective_mct_with_global(
     global_mct: &GlobalMctData,
     previous_flight: &Flightcore,
     next_flight: &Flightcore,
+    mct_cache: &mut HashMap<MctCacheKey, EffectiveMct>,
 ) -> EffectiveMct {
+    let cache_key = (
+        previous_flight as *const Flightcore,
+        next_flight as *const Flightcore,
+    );
+    if let Some(cached) = mct_cache.get(&cache_key) {
+        return cached.clone();
+    }
+
     let candidate_airports = candidate_transfer_airports(airports, previous_flight, next_flight);
     let status = determine_connection_status(airports, previous_flight, next_flight);
     let connection_building_filters = global_mct
@@ -1256,20 +1305,24 @@ fn resolve_effective_mct_with_global(
                 continue;
             }
             if let Some(minutes) = parse_mct_minutes(record.time.as_deref()) {
-                return EffectiveMct {
+                let result = EffectiveMct {
                     minutes,
                     source: EffectiveMctSource::StructuredRecord,
                     rule_description: format!("matched {}", describe_mct_record(record)),
                 };
+                mct_cache.insert(cache_key, result.clone());
+                return result;
             }
         }
     }
 
-    EffectiveMct {
+    let result = EffectiveMct {
         minutes: DEFAULT_MCT_MINUTES,
         source: EffectiveMctSource::DefaultConstant,
         rule_description: format!("default {}m fallback", DEFAULT_MCT_MINUTES),
-    }
+    };
+    mct_cache.insert(cache_key, result.clone());
+    result
 }
 
 fn candidate_transfer_airports<'a>(
@@ -1782,6 +1835,12 @@ fn request_error(request_trace: &str, event: &str, data: Value) {
     write_request_log("ERROR", request_trace, event, data);
 }
 
+fn request_verbose(request_trace: &str, event: &str, data: Value) {
+    if REQUEST_TRACE_ENABLED.load(Ordering::Acquire) {
+        write_request_log("INFO", request_trace, event, data);
+    }
+}
+
 fn write_request_log(level: &str, request_trace: &str, event: &str, data: Value) {
     let entry = json!({
         "timestamp": Utc::now().to_rfc3339(),
@@ -2256,6 +2315,7 @@ mod tests {
             1,
             &[&previous],
             &allowed,
+            &mut HashMap::new(),
         );
         let blocked_result = validate_connection(
             &path,
@@ -2265,6 +2325,7 @@ mod tests {
             1,
             &[&previous],
             &blocked,
+            &mut HashMap::new(),
         );
 
         assert!(allowed_result.is_ok());

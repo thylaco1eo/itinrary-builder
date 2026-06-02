@@ -90,6 +90,7 @@ fn find_paths_from_route_edges(
     let adjacency = build_route_adjacency(route_edges);
     let mut path_edges = Vec::new();
     let mut visited_airports = HashSet::new();
+    let mut visited_cities = HashSet::new();
     let mut seen_paths = HashSet::new();
     let mut results = Vec::new();
 
@@ -100,8 +101,15 @@ fn find_paths_from_route_edges(
         for &edge_index in edge_indices {
             let edge = &route_edges[edge_index];
             visited_airports.clear();
+            visited_cities.clear();
             visited_airports.insert(edge.from.clone());
             visited_airports.insert(edge.to.clone());
+            if let Some(city_key) = airports.get(&edge.from).and_then(airport_city_key) {
+                visited_cities.insert(city_key);
+            }
+            if let Some(city_key) = airports.get(&edge.to).and_then(airport_city_key) {
+                visited_cities.insert(city_key);
+            }
             path_edges.clear();
             path_edges.push(edge_index);
             collect_route_paths(
@@ -114,6 +122,7 @@ fn find_paths_from_route_edges(
                 max_circuity,
                 &mut path_edges,
                 &mut visited_airports,
+                &mut visited_cities,
                 &mut seen_paths,
                 &mut results,
             );
@@ -133,6 +142,7 @@ fn collect_route_paths(
     max_circuity: f64,
     path_edges: &mut Vec<usize>,
     visited_airports: &mut HashSet<String>,
+    visited_cities: &mut HashSet<String>,
     seen_paths: &mut HashSet<String>,
     results: &mut Vec<PathResult>,
 ) {
@@ -150,21 +160,41 @@ fn collect_route_paths(
         return;
     }
 
+    let last_to_city = airports.get(&last_edge.to).and_then(airport_city_key);
     for departure in related_airport_codes(&last_edge.to, airports, city_index) {
         let Some(edge_indices) = adjacency.get(&departure) else {
             continue;
         };
         for &edge_index in edge_indices {
             let next_edge = &route_edges[edge_index];
-            if next_edge.to == last_edge.to || visited_airports.contains(&next_edge.to) {
+            let next_to_city = airports.get(&next_edge.to).and_then(airport_city_key);
+            let next_from_city = airports.get(&next_edge.from).and_then(airport_city_key);
+
+            if next_edge.to == last_edge.to
+                || visited_airports.contains(&next_edge.to)
+                || (next_to_city != last_to_city && next_to_city.is_some() && visited_cities.contains(next_to_city.as_ref().unwrap()))
+            {
                 continue;
             }
-            if next_edge.from != last_edge.to && visited_airports.contains(&next_edge.from) {
+            if next_edge.from != last_edge.to
+                && (visited_airports.contains(&next_edge.from)
+                    || (next_from_city != last_to_city
+                        && next_from_city.is_some()
+                        && visited_cities.contains(next_from_city.as_ref().unwrap())))
+            {
                 continue;
             }
 
             let inserted_from = visited_airports.insert(next_edge.from.clone());
             let inserted_to = visited_airports.insert(next_edge.to.clone());
+            let mut inserted_from_city = false;
+            let mut inserted_to_city = false;
+            if let Some(ref ck) = next_from_city {
+                inserted_from_city = visited_cities.insert(ck.clone());
+            }
+            if let Some(ref ck) = next_to_city {
+                inserted_to_city = visited_cities.insert(ck.clone());
+            }
             path_edges.push(edge_index);
             collect_route_paths(
                 route_edges,
@@ -176,6 +206,7 @@ fn collect_route_paths(
                 max_circuity,
                 path_edges,
                 visited_airports,
+                visited_cities,
                 seen_paths,
                 results,
             );
@@ -185,6 +216,16 @@ fn collect_route_paths(
             }
             if inserted_from {
                 visited_airports.remove(&next_edge.from);
+            }
+            if inserted_to_city {
+                if let Some(ref ck) = next_to_city {
+                    visited_cities.remove(ck.as_str());
+                }
+            }
+            if inserted_from_city {
+                if let Some(ref ck) = next_from_city {
+                    visited_cities.remove(ck.as_str());
+                }
             }
         }
     }
@@ -436,6 +477,29 @@ mod tests {
         assert!(relaxed_paths[0].circuity < 2.5);
     }
 
+    #[test]
+    fn rejects_path_revisiting_same_city_through_different_airport() {
+        let airports = sample_airports();
+        let route_edges = vec![
+            sample_edge(&airports, "PKX", "SHA", "CA", "100"),
+            sample_edge(&airports, "SHA", "PEK", "CA", "200"),
+            sample_edge(&airports, "PEK", "FRA", "CA", "300"),
+        ];
+
+        let paths = find_paths_from_route_edges(&route_edges, &airports, "PEK", "FRA", 4, 10.0);
+
+        let invalid_signature = "PKX>SHA|SHA>PEK|PEK>FRA";
+        let has_invalid = paths.iter().any(|p| path_signature(p) == invalid_signature);
+        assert!(
+            !has_invalid,
+            "should reject path PKX->SHA->PEK->FRA because Beijing appears twice (PKX and PEK)"
+        );
+
+        let valid_signature = "PEK>FRA";
+        let has_valid = paths.iter().any(|p| path_signature(p) == valid_signature);
+        assert!(has_valid, "direct path PEK->FRA should still be allowed");
+    }
+
     fn sample_airports() -> HashMap<String, Airport> {
         [
             sample_airport("AAA", "Alpha", "CN", 116.0, 39.0),
@@ -445,6 +509,8 @@ mod tests {
             sample_airport("NRT", "Tokyo", "JP", 140.3929, 35.772),
             sample_airport("HND", "Tokyo", "JP", 139.7798, 35.5494),
             sample_airport("CAN", "Guangzhou", "CN", 113.2988, 23.3924),
+            sample_airport("SHA", "Shanghai", "CN", 121.4737, 31.2304),
+            sample_airport("FRA", "Frankfurt", "DE", 8.6821, 50.1109),
         ]
         .into_iter()
         .map(|airport| (airport.id().as_str().to_string(), airport))
