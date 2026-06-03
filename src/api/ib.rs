@@ -788,15 +788,21 @@ fn collect_segment_candidates<'a>(
 ) -> Option<Vec<&'a Flightcore>> {
     let from = record_id_code(&segment.from)?;
     let to = record_id_code(&segment.to)?;
-    let route_flights = segment.flights.clone();
+    let from_ref: &str = &from;
+    let to_ref: &str = &to;
     let lookup_dates = lookup_dates_for_segment(current, dep_date, segment_index);
-    let lookup_keys = lookup_keys_for_segment(&route_flights, &from, &to, &lookup_dates);
-    let hits = lookup_keys
+    let hits: Vec<&Flightcore> = segment
+        .flights
         .iter()
-        .filter_map(|key| flights.get(key).map(|flight| (key.clone(), flight)))
-        .collect::<Vec<_>>();
+        .filter_map(|rf| rf.split_once('_'))
+        .flat_map(|(company, flight_id)| {
+            lookup_dates
+                .iter()
+                .filter_map(move |date| flights.get(&flight_storage_key(company, flight_id, from_ref, to_ref, *date)))
+        })
+        .collect();
 
-    request_info(
+    request_verbose(
         request_trace,
         "segment_route",
         json!({
@@ -805,12 +811,12 @@ fn collect_segment_candidates<'a>(
             "segment_count": segment_count,
             "from": from,
             "to": to,
-            "route_flights": route_flights,
-            "companies": segment.companies,
+            "route_flights": &segment.flights,
+            "companies": &segment.companies,
             "mct_strategy": "candidate_specific_mct_record_evaluation"
         }),
     );
-    request_info(
+    request_verbose(
         request_trace,
         "segment_lookup_window",
         json!({
@@ -825,38 +831,19 @@ fn collect_segment_candidates<'a>(
             "window": connection_window_json(current, segment_index)
         }),
     );
-    request_info(
-        request_trace,
-        "segment_lookup_keys",
-        json!({
-            "path_index": path_index,
-            "segment_index": segment_index + 1,
-            "segment_count": segment_count,
-            "keys": lookup_keys
-        }),
-    );
-    request_info(
+    request_verbose(
         request_trace,
         "segment_lookup_hits",
         json!({
             "path_index": path_index,
             "segment_index": segment_index + 1,
             "segment_count": segment_count,
-            "hits": hits
-                .iter()
-                .map(|(key, flight)| {
-                    json!({
-                        "key": key,
-                        "flight": flight_json(flight)
-                    })
-                })
-                .collect::<Vec<_>>()
+            "hits": flight_list_json(&hits)
         }),
     );
 
     let candidates = hits
         .into_iter()
-        .map(|(_, flight)| flight)
         .filter(|flight| {
             validate_connection(
                 path,
@@ -872,7 +859,7 @@ fn collect_segment_candidates<'a>(
         })
         .collect::<Vec<_>>();
 
-    request_info(
+    request_verbose(
         request_trace,
         "segment_candidates",
         json!({
@@ -907,26 +894,6 @@ fn lookup_dates_for_segment(
     }
 
     dates
-}
-
-fn lookup_keys_for_segment(
-    route_flights: &[String],
-    from: &str,
-    to: &str,
-    dates: &[NaiveDate],
-) -> Vec<String> {
-    let mut keys = Vec::new();
-
-    for route_flight in route_flights {
-        let Some((company, flight_id)) = route_flight.split_once('_') else {
-            continue;
-        };
-        for date in dates {
-            keys.push(flight_storage_key(company, flight_id, from, to, *date));
-        }
-    }
-
-    keys
 }
 
 fn validate_connection(
