@@ -173,6 +173,11 @@ impl WebData {
         self.global_mct.read().unwrap()
     }
 
+    pub fn remove_airport(&self, code: &str) {
+        self.airports.write().unwrap().remove(code);
+        self.airport_mct.write().unwrap().remove(code);
+    }
+
     pub fn upsert_airport(&self, row: AirportRow) -> Result<(), AirportRowError> {
         let code = row.code.code.clone();
         let airport = Airport::try_from(row)?;

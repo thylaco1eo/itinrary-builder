@@ -85,6 +85,10 @@ pub async fn get_all_airport_mct(
     Ok(airport_mct)
 }
 
+pub async fn delete_airport_mct(db: &Surreal<Any>, code: &str) -> surrealdb::Result<()> {
+    set_airport_mct(db, code, &AirportMctData::default()).await
+}
+
 pub async fn set_airport_mct(
     db: &Surreal<Any>,
     code: &str,

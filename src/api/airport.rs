@@ -9,7 +9,7 @@ use crate::Infrastructure::db::model::airport_row::AirportRow;
 use crate::Infrastructure::db::model::airport_row::AirportRowError;
 use crate::Infrastructure::file_loader::mct_parser::MctParser;
 use actix_multipart::form::{tempfile::TempFile, MultipartForm};
-use actix_web::{get, post, put, web, HttpResponse};
+use actix_web::{delete, get, post, put, web, HttpResponse};
 use anyhow::Context;
 use serde::Serialize;
 use serde_json::json;
@@ -84,6 +84,104 @@ pub async fn add_airport(
         Ok(false) => Ok(HttpResponse::Conflict().json(json!({"status": "conflict"}))),
         Err(e) => {
             log::error!("Error adding airport: {}", e);
+            Ok(HttpResponse::InternalServerError()
+                .json(json!({"status": "error", "message": e.to_string()})))
+        }
+    }
+}
+
+#[post("/airport/{airportcode}")]
+pub async fn update_airport(
+    data: web::Data<WebData>,
+    path: web::Path<String>,
+    body: web::Json<AirportRow>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let path_code = path.into_inner().trim().to_uppercase();
+    let row = body.into_inner();
+
+    if path_code != row.code.code.trim().to_uppercase() {
+        return Ok(HttpResponse::BadRequest().json(
+            json!({"status": "airport code mismatch", "message": "path airport code does not match body airport code"}),
+        ));
+    }
+
+    if let Err(e) = Airport::try_from(row.clone()) {
+        return match e {
+            AirportRowError::InvalidCode(_) => {
+                Ok(HttpResponse::BadRequest().json(json!({"status": "invalid airport code"})))
+            }
+            AirportRowError::InvalidTimezone(_) => {
+                Ok(HttpResponse::BadRequest().json(json!({"status": "invalid timezone"})))
+            }
+            AirportRowError::InvalidLatitude => {
+                Ok(HttpResponse::BadRequest().json(json!({"status": "invalid latitude"})))
+            }
+            AirportRowError::InvalidLongitude => {
+                Ok(HttpResponse::BadRequest().json(json!({"status": "invalid longitude"})))
+            }
+        };
+    }
+
+    match db::repository::airport_repo::update_airport(data.database(), &row).await {
+        Ok(true) => {
+            data.upsert_airport(row)
+                .map_err(actix_web::error::ErrorInternalServerError)?;
+            Ok(HttpResponse::Ok().json(json!({"status": "ok"})))
+        }
+        Ok(false) => Ok(HttpResponse::NotFound().json(json!({
+            "status": "not_found",
+            "message": format!("airport {} not found", row.code.code)
+        }))),
+        Err(e) => {
+            log::error!("Error updating airport: {}", e);
+            Ok(HttpResponse::InternalServerError()
+                .json(json!({"status": "error", "message": e.to_string()})))
+        }
+    }
+}
+
+#[get("/airport/{airportcode}")]
+pub async fn get_airport(
+    data: web::Data<WebData>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let airport_code = path.into_inner().trim().to_uppercase();
+    match db::repository::airport_repo::get_airport(data.database(), &airport_code).await {
+        Ok(Some(airport)) => Ok(HttpResponse::Ok().json(airport)),
+        Ok(None) => Ok(HttpResponse::NotFound().json(json!({
+            "status": "not_found",
+            "message": format!("airport {} not found", airport_code)
+        }))),
+        Err(e) => {
+            log::error!("Error getting airport: {}", e);
+            Ok(HttpResponse::InternalServerError()
+                .json(json!({"status": "error", "message": e.to_string()})))
+        }
+    }
+}
+
+#[delete("/airport/{airportcode}")]
+pub async fn delete_airport(
+    data: web::Data<WebData>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let airport_code = path.into_inner().trim().to_uppercase();
+
+    match db::repository::airport_repo::delete_airport(data.database(), &airport_code).await {
+        Ok(true) => {
+            let _ = db::repository::mct_repo::delete_airport_mct(data.database(), &airport_code).await;
+            data.remove_airport(&airport_code);
+            Ok(HttpResponse::Ok().json(json!({
+                "status": "ok",
+                "airport": airport_code
+            })))
+        }
+        Ok(false) => Ok(HttpResponse::NotFound().json(json!({
+            "status": "not_found",
+            "message": format!("airport {} not found", airport_code)
+        }))),
+        Err(e) => {
+            log::error!("Error deleting airport: {}", e);
             Ok(HttpResponse::InternalServerError()
                 .json(json!({"status": "error", "message": e.to_string()})))
         }

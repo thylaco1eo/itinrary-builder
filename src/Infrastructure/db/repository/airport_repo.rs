@@ -44,6 +44,47 @@ pub async fn add_airport(db: &Surreal<Any>, airport: AirportRow) -> surrealdb::R
     Ok(true)
 }
 
+pub async fn update_airport(db: &Surreal<Any>, airport: &AirportRow) -> surrealdb::Result<bool> {
+    let id = airport.code.code.clone();
+    let exists = check_airport_exists(db, &airport.code).await?;
+    if !exists {
+        return Ok(false);
+    }
+
+    let point = Geometry::Point(Point::new(airport.longitude, airport.latitude));
+
+    let _response = db.query("UPDATE type::record('airport',$id) SET code = $code, timezone = $timezone, name = $name, city = $city, country = $country, state = $state, location = $location")
+        .bind(("id", id))
+        .bind(("code", airport.code.code.clone()))
+        .bind(("timezone", airport.timezone.clone()))
+        .bind(("name", airport.name.clone()))
+        .bind(("city", airport.city.clone()))
+        .bind(("country", airport.country.clone()))
+        .bind(("state", airport.state.clone()))
+        .bind(("location", Value::Geometry(point)))
+        .await?;
+
+    Ok(true)
+}
+
+pub async fn delete_airport(db: &Surreal<Any>, code: &str) -> surrealdb::Result<bool> {
+    let exists = check_airport_exists(
+        db,
+        &AirportCodeRow {
+            code: code.to_string(),
+        },
+    )
+    .await?;
+    if !exists {
+        return Ok(false);
+    }
+
+    db.query("DELETE type::record('airport',$id)")
+        .bind(("id", code.to_string()))
+        .await?;
+    Ok(true)
+}
+
 pub async fn get_airport(db: &Surreal<Any>, code: &str) -> surrealdb::Result<Option<AirportRow>> {
     let record: Option<Value> = db.select(("airport", code.to_string())).await?;
     Ok(record.and_then(map_airport_row))
