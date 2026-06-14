@@ -140,6 +140,39 @@ pub async fn update_airport(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct AirportListItem {
+    code: String,
+    timezone: String,
+    name: Option<String>,
+    city: Option<String>,
+    country: Option<String>,
+    state: Option<String>,
+    latitude: f64,
+    longitude: f64,
+}
+
+#[get("/airport")]
+pub async fn list_airports(
+    data: web::Data<WebData>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let airports = data.airports();
+    let result: Vec<AirportListItem> = airports
+        .iter()
+        .map(|(code, airport)| AirportListItem {
+            code: code.clone(),
+            timezone: airport.timezone().name().to_string(),
+            name: airport.name().map(|s| s.to_string()),
+            city: airport.city().map(|s| s.to_string()),
+            country: airport.country().map(|s| s.to_string()),
+            state: airport.state().map(|s| s.to_string()),
+            latitude: airport.latitude(),
+            longitude: airport.longitude(),
+        })
+        .collect();
+    Ok(HttpResponse::Ok().json(result))
+}
+
 #[get("/airport/{airportcode}")]
 pub async fn get_airport(
     data: web::Data<WebData>,

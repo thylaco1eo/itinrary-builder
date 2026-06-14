@@ -119,6 +119,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(app_state.clone())
             .service(api::schedule::add_schedule::add_schedule)
             .service(api::utils::health_check::health_check)
+            .service(api::airport::list_airports)
             .service(api::airport::add_airport)
             .service(api::airport::get_airport)
             .service(api::airport::update_airport)
@@ -127,6 +128,7 @@ async fn main() -> std::io::Result<()> {
             .service(api::airport::put_airport_mct)
             .service(api::airport::get_airport_mct)
             .service(api::ib::get_ib)
+            .service(api::flight::get_flight)
             .wrap(Logger::default())
     })
     .bind(("0.0.0.0", application_port))?

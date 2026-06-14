@@ -130,6 +130,28 @@ impl<'a> SameFlightExpansionCache<'a> {
         }
     }
 
+    fn from_groups(
+        key_to_keys: &HashMap<String, Vec<String>>,
+        flights: &'a HashMap<String, Flightcore>,
+    ) -> Self {
+        let mut groups: HashMap<String, Vec<&'a Flightcore>> = HashMap::new();
+
+        for (group_key, flight_keys) in key_to_keys {
+            let entries = flight_keys
+                .iter()
+                .filter_map(|key| flights.get(key))
+                .collect::<Vec<_>>();
+            if !entries.is_empty() {
+                groups.insert(group_key.clone(), entries);
+            }
+        }
+
+        Self {
+            groups,
+            expansions: HashMap::new(),
+        }
+    }
+
     fn expand(&mut self, flight: &'a Flightcore) -> Vec<&'a Flightcore> {
         let signature = flight_signature(flight);
         if let Some(cached) = self.expansions.get(&signature) {
@@ -416,7 +438,8 @@ pub async fn get_ib(
     let flights = data.flights();
     let airport_mct = data.airport_mct();
     let global_mct = data.global_mct();
-    let mut same_flight_cache = SameFlightExpansionCache::new(&flights);
+    let groups = data.same_flight_groups();
+    let mut same_flight_cache = SameFlightExpansionCache::from_groups(&groups, &flights);
     let mut mct_cache: HashMap<MctCacheKey, EffectiveMct> = HashMap::new();
     request_info(
         &request_trace,

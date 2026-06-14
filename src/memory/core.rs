@@ -18,6 +18,7 @@ pub struct WebData {
     airports: RwLock<HashMap<String, Airport>>,
     airport_mct: RwLock<HashMap<String, AirportMctData>>,
     global_mct: RwLock<GlobalMctData>,
+    same_flight_groups: RwLock<HashMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Default)]
@@ -144,12 +145,20 @@ impl WebData {
             size_of::<Flightcore>()
         );
 
+        let same_flight_groups = build_same_flight_groups(&flights);
+        println!(
+            "Built {} same-flight groups from {} flights.",
+            same_flight_groups.len(),
+            flights.len()
+        );
+
         WebData {
             database: data_base,
             flights: RwLock::new(flights),
             airports: RwLock::new(airports),
             airport_mct: RwLock::new(airport_mct),
             global_mct: RwLock::new(global_mct),
+            same_flight_groups: RwLock::new(same_flight_groups),
         }
     }
 
@@ -171,6 +180,10 @@ impl WebData {
 
     pub fn global_mct(&self) -> RwLockReadGuard<'_, GlobalMctData> {
         self.global_mct.read().unwrap()
+    }
+
+    pub fn same_flight_groups(&self) -> RwLockReadGuard<'_, HashMap<String, Vec<String>>> {
+        self.same_flight_groups.read().unwrap()
     }
 
     pub fn remove_airport(&self, code: &str) {
@@ -276,6 +289,8 @@ impl WebData {
             }
         }
 
+        let groups = build_same_flight_groups(&flights);
+        *self.same_flight_groups.write().unwrap() = groups;
         summary
     }
 
@@ -298,9 +313,23 @@ impl WebData {
         }
 
         summary.active_flights = next_flights.len();
+        let groups = build_same_flight_groups(&next_flights);
         *self.flights.write().unwrap() = next_flights;
+        *self.same_flight_groups.write().unwrap() = groups;
         summary
     }
+}
+
+fn build_same_flight_groups(flights: &HashMap<String, Flightcore>) -> HashMap<String, Vec<String>> {
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for (storage_key, flight) in flights {
+        let group_key = format!("{}:{}", flight.company(), flight.flight_id());
+        groups
+            .entry(group_key)
+            .or_default()
+            .push(storage_key.clone());
+    }
+    groups
 }
 
 fn build_airport_map(rows: Vec<AirportRow>) -> (HashMap<String, Airport>, usize) {
