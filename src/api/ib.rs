@@ -435,12 +435,14 @@ pub async fn get_ib(
         log_route_result(&request_trace, path_index + 1, path);
     }
 
+    let t_load = Instant::now();
     let flights = data.flights();
     let airport_mct = data.airport_mct();
     let global_mct = data.global_mct();
     let groups = data.same_flight_groups();
     let mut same_flight_cache = SameFlightExpansionCache::from_groups(&groups, &flights);
     let mut mct_cache: HashMap<MctCacheKey, EffectiveMct> = HashMap::new();
+    let load_ms = t_load.elapsed().as_millis();
     request_info(
         &request_trace,
         "flight_lookup_strategy",
@@ -625,6 +627,7 @@ pub async fn get_ib(
         "status": "ok",
         "itineraries": itineraries,
         "_timing": {
+            "load_ms": load_ms,
             "route_ms": route_ms,
             "build_ms": build_ms,
             "total_ms": total_ms,
