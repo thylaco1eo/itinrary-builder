@@ -4,10 +4,12 @@ use crate::domain::mct::{AirportMctData, GlobalMctData};
 use crate::Infrastructure::db::model::airport_row::{AirportRow, AirportRowError};
 use crate::Infrastructure::db::model::flight_row::{FlightCacheRow, FlightRow};
 use crate::Infrastructure::db::repository::airport_repo::get_all_airports;
+use crate::Infrastructure::db::repository::cache_repo::list_hot_ods;
 use crate::Infrastructure::db::repository::flight_repo::get_flights;
 use crate::Infrastructure::db::repository::mct_repo::{get_all_airport_mct, get_global_mct};
+use crate::Infrastructure::db::repository::route_repo::{get_all_route_edges, RouteEdge};
 use chrono::NaiveDate;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::{RwLock, RwLockReadGuard};
 use surrealdb::{engine::any, Surreal};
@@ -19,6 +21,9 @@ pub struct WebData {
     airport_mct: RwLock<HashMap<String, AirportMctData>>,
     global_mct: RwLock<GlobalMctData>,
     same_flight_groups: RwLock<HashMap<String, Vec<String>>>,
+    route_edges: RwLock<Vec<RouteEdge>>,
+    hot_ods: RwLock<HashSet<(String, String)>>,
+    pub(crate) itin_cache: RwLock<HashMap<(String, String, String), Vec<Vec<String>>>>,
 }
 
 #[derive(Debug, Default)]
@@ -152,6 +157,29 @@ impl WebData {
             flights.len()
         );
 
+        println!("Loading route edges into memory...");
+        let route_edges = match get_all_route_edges(&data_base, &airports).await {
+            Ok(edges) => edges,
+            Err(error) => {
+                eprintln!("Failed to load route edges from database: {}", error);
+                Vec::new()
+            }
+        };
+        println!("Loaded {} route edges into memory.", route_edges.len());
+
+        println!("Loading hot ODs into memory...");
+        let hot_ods = match list_hot_ods(&data_base).await {
+            Ok(records) => records
+                .into_iter()
+                .map(|r| (r.origin.to_uppercase(), r.destination.to_uppercase()))
+                .collect::<HashSet<_>>(),
+            Err(error) => {
+                eprintln!("Failed to load hot ODs from database: {}", error);
+                HashSet::new()
+            }
+        };
+        println!("Loaded {} hot ODs into memory.", hot_ods.len());
+
         WebData {
             database: data_base,
             flights: RwLock::new(flights),
@@ -159,6 +187,9 @@ impl WebData {
             airport_mct: RwLock::new(airport_mct),
             global_mct: RwLock::new(global_mct),
             same_flight_groups: RwLock::new(same_flight_groups),
+            route_edges: RwLock::new(route_edges),
+            hot_ods: RwLock::new(hot_ods),
+            itin_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -184,6 +215,32 @@ impl WebData {
 
     pub fn same_flight_groups(&self) -> RwLockReadGuard<'_, HashMap<String, Vec<String>>> {
         self.same_flight_groups.read().unwrap()
+    }
+
+    pub fn route_edges(&self) -> RwLockReadGuard<'_, Vec<RouteEdge>> {
+        self.route_edges.read().unwrap()
+    }
+
+    pub fn hot_ods(&self) -> RwLockReadGuard<'_, HashSet<(String, String)>> {
+        self.hot_ods.read().unwrap()
+    }
+
+    pub fn is_hot_od(&self, origin: &str, destination: &str) -> bool {
+        self.hot_ods
+            .read()
+            .unwrap()
+            .contains(&(origin.to_string(), destination.to_string()))
+    }
+
+    pub fn add_hot_od(&self, origin: String, destination: String) {
+        self.hot_ods.write().unwrap().insert((origin, destination));
+    }
+
+    pub fn remove_hot_od(&self, origin: &str, destination: &str) {
+        self.hot_ods
+            .write()
+            .unwrap()
+            .remove(&(origin.to_string(), destination.to_string()));
     }
 
     pub fn remove_airport(&self, code: &str) {
@@ -291,6 +348,7 @@ impl WebData {
 
         let groups = build_same_flight_groups(&flights);
         *self.same_flight_groups.write().unwrap() = groups;
+        self.itin_cache.write().unwrap().clear();
         summary
     }
 
@@ -316,7 +374,24 @@ impl WebData {
         let groups = build_same_flight_groups(&next_flights);
         *self.flights.write().unwrap() = next_flights;
         *self.same_flight_groups.write().unwrap() = groups;
+        self.itin_cache.write().unwrap().clear();
         summary
+    }
+
+    pub async fn reload_route_edges(&self) -> usize {
+        let airports = self.airports.read().unwrap();
+        match get_all_route_edges(&self.database, &airports).await {
+            Ok(edges) => {
+                let count = edges.len();
+                println!("Reloaded {} route edges into memory.", count);
+                *self.route_edges.write().unwrap() = edges;
+                count
+            }
+            Err(error) => {
+                eprintln!("Failed to reload route edges from database: {}", error);
+                0
+            }
+        }
     }
 }
 

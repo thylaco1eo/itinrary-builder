@@ -20,7 +20,7 @@ use crate::domain::mct::{
 use crate::memory::core::{flight_storage_key, WebData};
 use crate::runtime_paths;
 use crate::Infrastructure::db::model::flight_row::FlightDesignatorRow;
-use crate::Infrastructure::db::repository::route_repo::{self, PathResult, Segment};
+use crate::Infrastructure::db::repository::route_repo::{find_paths_from_route_edges, PathResult, Segment};
 
 const DEFAULT_MAX_TRANSPORTS: u8 = 0;
 const DEFAULT_MAX_TRAVEL_TIME_DAYS: u32 = 2;
@@ -35,19 +35,19 @@ pub fn set_request_trace(enabled: bool) {
     REQUEST_TRACE_ENABLED.store(enabled, Ordering::Release);
 }
 
-type MctCacheKey = (*const Flightcore, *const Flightcore);
+pub(crate) type MctCacheKey = (*const Flightcore, *const Flightcore);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EffectiveMctSource {
+pub(crate) enum EffectiveMctSource {
     StructuredRecord,
     DefaultConstant,
 }
 
 #[derive(Clone, Debug)]
-struct EffectiveMct {
-    minutes: i64,
-    source: EffectiveMctSource,
-    rule_description: String,
+pub(crate) struct EffectiveMct {
+    pub minutes: i64,
+    pub source: EffectiveMctSource,
+    pub rule_description: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -108,7 +108,13 @@ struct ItineraryResponse {
     transfer_count: u32,
 }
 
+fn empty_groups_map() -> &'static HashMap<String, Vec<String>> {
+    Box::leak(Box::new(HashMap::new()))
+}
+
 struct SameFlightExpansionCache<'a> {
+    key_to_keys: &'a HashMap<String, Vec<String>>,
+    flights: &'a HashMap<String, Flightcore>,
     groups: HashMap<String, Vec<&'a Flightcore>>,
     expansions: HashMap<String, Vec<&'a Flightcore>>,
 }
@@ -125,31 +131,39 @@ impl<'a> SameFlightExpansionCache<'a> {
         }
 
         Self {
+            key_to_keys: &empty_groups_map(),
+            flights: all_flights,
             groups,
             expansions: HashMap::new(),
         }
     }
 
     fn from_groups(
-        key_to_keys: &HashMap<String, Vec<String>>,
+        key_to_keys: &'a HashMap<String, Vec<String>>,
         flights: &'a HashMap<String, Flightcore>,
     ) -> Self {
-        let mut groups: HashMap<String, Vec<&'a Flightcore>> = HashMap::new();
-
-        for (group_key, flight_keys) in key_to_keys {
-            let entries = flight_keys
-                .iter()
-                .filter_map(|key| flights.get(key))
-                .collect::<Vec<_>>();
-            if !entries.is_empty() {
-                groups.insert(group_key.clone(), entries);
-            }
-        }
-
         Self {
-            groups,
+            key_to_keys,
+            flights,
+            groups: HashMap::new(),
             expansions: HashMap::new(),
         }
+    }
+
+    fn ensure_group(&mut self, group_key: &str) {
+        if self.groups.contains_key(group_key) {
+            return;
+        }
+        let entries = self
+            .key_to_keys
+            .get(group_key)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(|key| self.flights.get(key))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.groups.insert(group_key.to_string(), entries);
     }
 
     fn expand(&mut self, flight: &'a Flightcore) -> Vec<&'a Flightcore> {
@@ -158,11 +172,10 @@ impl<'a> SameFlightExpansionCache<'a> {
             return cached.clone();
         }
 
-        let group = self
-            .groups
-            .get(&same_operating_flight_key(flight))
-            .cloned()
-            .unwrap_or_default();
+        let group_key = same_operating_flight_key(flight);
+        self.ensure_group(&group_key);
+
+        let group = self.groups.get(&group_key).cloned().unwrap_or_default();
         let candidates = group
             .into_iter()
             .filter(|candidate| is_subflight_candidate(flight, candidate))
@@ -368,6 +381,131 @@ pub async fn get_ib(
     let origin_airport_scope = same_city_airport_codes(&origin, &airport_cache);
     let destination_airport_scope = same_city_airport_codes(&destination, &airport_cache);
 
+    if max_transports <= 2 && data.is_hot_od(&origin, &destination) {
+        let date_key = dep_date.format("%Y-%m-%d").to_string();
+        let cache = data.itin_cache.read().unwrap();
+        if let Some(cached_combos) = cache.get(&(origin.clone(), destination.clone(), date_key)) {
+            let flights_guard = data.flights();
+            let groups_guard = data.same_flight_groups();
+            let mut same_flight_cache =
+                SameFlightExpansionCache::from_groups(&groups_guard, &flights_guard);
+            let mut itineraries = Vec::new();
+            let mut seen = HashSet::new();
+
+            for combo in cached_combos {
+                let resolved: Vec<&Flightcore> = combo
+                    .iter()
+                    .filter_map(|key| flights_guard.get(key))
+                    .collect();
+                if resolved.len() != combo.len() {
+                    continue;
+                }
+
+                let expanded_segments =
+                    expand_itinerary_segments(&resolved, &mut same_flight_cache);
+                let effective_transport_count = transfer_count(&expanded_segments);
+                if effective_transport_count > u32::from(max_transports) {
+                    continue;
+                }
+                let total_travel_time_minutes = total_travel_time_minutes(&expanded_segments);
+                if u64::from(total_travel_time_minutes) > max_travel_time_minutes {
+                    continue;
+                }
+                if !matches_operating_company_filter(
+                    &expanded_segments,
+                    operation_companies.as_deref(),
+                ) {
+                    continue;
+                }
+
+                let itinerary = ItineraryResponse {
+                    airports: airports_for_segments(&expanded_segments)
+                        .unwrap_or_else(|| origin_airport_scope.clone()),
+                    flights: expanded_segments
+                        .iter()
+                        .map(|flight| FlightInfoResponse {
+                            company: flight.company().to_string(),
+                            flight_id: flight.flight_id().to_string(),
+                            origin: flight.origin().as_str().to_string(),
+                            destination: flight.destination().as_str().to_string(),
+                            departure: flight.dep_local().to_rfc3339(),
+                            arrival: flight.arr_local().to_rfc3339(),
+                            block_time_minutes: flight.block_time_minutes(),
+                            departure_terminal: flight.departure_terminal().map(ToOwned::to_owned),
+                            arrival_terminal: flight.arrival_terminal().map(ToOwned::to_owned),
+                            operating_company: flight.operating_designator().company.clone(),
+                            operating_flight_id: flight.operating_designator().flight_number.clone(),
+                            operating_suffix: flight.operating_designator().operational_suffix.clone(),
+                            duplicate_flights: flight
+                                .duplicate_designators()
+                                .iter()
+                                .map(flight_designator_response)
+                                .collect(),
+                            joint_operation_companies: flight
+                                .joint_operation_airline_designators()
+                                .to_vec(),
+                            meal_service_note: flight.meal_service_note().map(ToOwned::to_owned),
+                            in_flight_service_info: flight
+                                .in_flight_service_info()
+                                .map(ToOwned::to_owned),
+                            electronic_ticketing_info: flight
+                                .electronic_ticketing_info()
+                                .map(ToOwned::to_owned),
+                        })
+                        .collect(),
+                    total_flight_time_minutes: expanded_segments
+                        .iter()
+                        .map(|flight| flight.block_time_minutes())
+                        .sum(),
+                    total_travel_time_minutes,
+                    transfer_time_minutes: transfer_time_minutes(&expanded_segments),
+                    transfer_count: effective_transport_count,
+                };
+
+                let dedup_key = itinerary
+                    .flights
+                    .iter()
+                    .map(|flight| {
+                        format!(
+                            "{}:{}:{}:{}",
+                            flight.company, flight.flight_id, flight.origin, flight.departure
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
+
+                if seen.insert(dedup_key) {
+                    itineraries.push(itinerary);
+                }
+            }
+
+            let total_ms = t0.elapsed().as_millis();
+            let itinerary_count = itineraries.len();
+
+            request_info(
+                &request_trace,
+                "request_completed_cache",
+                json!({
+                    "itinerary_count": itinerary_count,
+                    "source": "cache"
+                }),
+            );
+
+            return Ok(HttpResponse::Ok().json(json!({
+                "status": "ok",
+                "itineraries": itineraries,
+                "_timing": {
+                    "load_ms": 0,
+                    "route_ms": 0,
+                    "build_ms": 0,
+                    "total_ms": total_ms,
+                    "path_count": 0,
+                    "itinerary_count": itinerary_count
+                }
+            })));
+        }
+    }
+
     request_info(
         &request_trace,
         "route_search_started",
@@ -385,33 +523,15 @@ pub async fn get_ib(
         }),
     );
     let t_route = Instant::now();
-    let mut paths = match route_repo::find_paths(
-        data.database(),
+    let route_edges = data.route_edges();
+    let mut paths = find_paths_from_route_edges(
+        &route_edges,
+        &airport_cache,
         origin.as_str(),
         destination.as_str(),
-        &airport_cache,
         max_hops,
         MAX_CIRCUITY,
-    )
-    .await
-    {
-        Ok(paths) => paths,
-        Err(e) => {
-            request_error(
-                &request_trace,
-                "route_search_failed",
-                json!({
-                    "origin": origin,
-                    "destination": destination,
-                    "error": e.to_string()
-                }),
-            );
-            return Ok(HttpResponse::InternalServerError().json(json!({
-                "status": "error",
-                "message": e.to_string()
-            })));
-        }
-    };
+    );
 
     let route_ms = t_route.elapsed().as_millis();
     let path_count = paths.len();
@@ -637,7 +757,7 @@ pub async fn get_ib(
     })))
 }
 
-fn build_itineraries_for_path<'a>(
+pub(crate) fn build_itineraries_for_path<'a>(
     path: &PathResult,
     flights: &'a HashMap<String, Flightcore>,
     airports: &HashMap<String, Airport>,

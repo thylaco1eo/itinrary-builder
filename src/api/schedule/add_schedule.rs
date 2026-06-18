@@ -78,6 +78,22 @@ pub async fn add_schedule(
     let cache_summary = data.replace_flights(staged.flight_rows);
     let cache_duration = cache_started.elapsed();
 
+    let route_reload_started = Instant::now();
+    let route_edge_count = data.reload_route_edges().await;
+    let route_reload_duration = route_reload_started.elapsed();
+    println!(
+        "⏱️ Route edges reload: {:?} ({} edges)",
+        route_reload_duration, route_edge_count
+    );
+
+    let itin_cache_started = Instant::now();
+    crate::api::cache_builder::build_itin_cache(&data);
+    let itin_cache_duration = itin_cache_started.elapsed();
+    println!(
+        "⏱️ Itinerary cache rebuild: {:?}",
+        itin_cache_duration
+    );
+
     println!(
         "Total: {} OAG flights with {} physical legs and {} imported plan variants into production tables.",
         staged.flight_count,

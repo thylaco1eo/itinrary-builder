@@ -38,12 +38,23 @@ struct RouteEdgeRecord {
 }
 
 #[derive(Clone, Debug)]
-struct RouteEdge {
-    from: String,
-    to: String,
-    companies: Vec<String>,
-    flights: Vec<String>,
-    distance: f64,
+pub struct RouteEdge {
+    pub from: String,
+    pub to: String,
+    pub companies: Vec<String>,
+    pub flights: Vec<String>,
+    pub distance: f64,
+}
+
+pub async fn get_all_route_edges(
+    db: &Surreal<Any>,
+    airports: &HashMap<String, Airport>,
+) -> surrealdb::Result<Vec<RouteEdge>> {
+    let route_records: Vec<RouteEdgeRecord> = db.select("route").await?;
+    Ok(route_records
+        .into_iter()
+        .filter_map(|record| route_edge_from_record(record, airports))
+        .collect())
 }
 
 pub async fn find_paths(
@@ -54,12 +65,7 @@ pub async fn find_paths(
     max_hops: u8,
     max_circuity: f64,
 ) -> surrealdb::Result<Vec<PathResult>> {
-    let route_records: Vec<RouteEdgeRecord> = db.select("route").await?;
-    let route_edges = route_records
-        .into_iter()
-        .filter_map(|record| route_edge_from_record(record, airports))
-        .collect::<Vec<_>>();
-
+    let route_edges = get_all_route_edges(db, airports).await?;
     Ok(find_paths_from_route_edges(
         &route_edges,
         airports,
@@ -70,7 +76,7 @@ pub async fn find_paths(
     ))
 }
 
-fn find_paths_from_route_edges(
+pub fn find_paths_from_route_edges(
     route_edges: &[RouteEdge],
     airports: &HashMap<String, Airport>,
     dep: &str,

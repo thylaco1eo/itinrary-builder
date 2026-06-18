@@ -1,4 +1,5 @@
 pub mod airport;
+pub mod cache;
 pub mod flight;
 pub mod flightplan;
 pub mod inventory;

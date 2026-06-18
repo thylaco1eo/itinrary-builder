@@ -105,6 +105,7 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to create application database session");
     println!("Fresh SurrealDB session ready.");
     let app_state: web::Data<WebData> = web::Data::new(WebData::new(database).await);
+    api::cache_builder::build_itin_cache(&app_state);
     println!(
         "Startup complete. {} airports and {} flights are ready in memory.",
         app_state.airports().len(),
@@ -129,6 +130,9 @@ async fn main() -> std::io::Result<()> {
             .service(api::airport::get_airport_mct)
             .service(api::ib::get_ib)
             .service(api::flight::get_flight)
+            .service(api::cache::list_hot_ods)
+            .service(api::cache::add_hot_od)
+            .service(api::cache::remove_hot_od)
             .wrap(Logger::default())
     })
     .bind(("0.0.0.0", application_port))?
