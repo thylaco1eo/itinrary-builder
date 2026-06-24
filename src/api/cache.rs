@@ -58,7 +58,6 @@ pub async fn add_hot_od(
     match cache_repo::add_hot_od(data.database(), &origin, &destination).await {
         Ok(()) => {
             data.add_hot_od(origin.clone(), destination.clone());
-            cache_builder::build_itin_cache_for_od(&data, &origin, &destination);
             Ok(HttpResponse::Created().json(json!({
                 "status": "ok",
                 "origin": origin,
@@ -107,4 +106,20 @@ pub async fn remove_hot_od(
             })))
         }
     }
+}
+
+#[post("/cache/rebuild")]
+pub async fn rebuild_itin_cache(
+    data: web::Data<WebData>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let started = std::time::Instant::now();
+    cache_builder::build_itin_cache(&data);
+    let duration = started.elapsed();
+    let entry_count = data.itin_cache.read().unwrap().len();
+
+    Ok(HttpResponse::Ok().json(json!({
+        "status": "ok",
+        "cache_entries": entry_count,
+        "duration_ms": duration.as_millis()
+    })))
 }

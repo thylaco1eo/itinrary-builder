@@ -133,6 +133,7 @@ async fn main() -> std::io::Result<()> {
             .service(api::cache::list_hot_ods)
             .service(api::cache::add_hot_od)
             .service(api::cache::remove_hot_od)
+            .service(api::cache::rebuild_itin_cache)
             .wrap(Logger::default())
     })
     .bind(("0.0.0.0", application_port))?
