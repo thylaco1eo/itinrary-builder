@@ -24,7 +24,8 @@ DEFINE TABLE IF NOT EXISTS mct;\
 DEFINE TABLE IF NOT EXISTS flight;\
 DEFINE TABLE IF NOT EXISTS route TYPE RELATION;\
 DEFINE TABLE IF NOT EXISTS flight_tmp;\
-DEFINE TABLE IF NOT EXISTS route_tmp TYPE RELATION;",
+DEFINE TABLE IF NOT EXISTS route_tmp TYPE RELATION;\
+DEFINE TABLE IF NOT EXISTS hot_od;",
         )
         .await
         .expect("Failed to execute empty query");
